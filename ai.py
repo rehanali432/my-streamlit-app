@@ -19,11 +19,15 @@ from dotenv import load_dotenv
 from PIL import Image, ImageOps
 import streamlit as st
 
-# Load environment variables
+# Load environment variables from standard location or relative .env
 load_dotenv()
+_env_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.isfile(_env_path):
+    load_dotenv(_env_path)
 
-# Fast Gemini Flash model supporting vision
-MODEL_NAME = "gemini-1.5-flash"
+# Active supported Gemini Flash model supporting vision & JSON output
+MODEL_NAME = "gemini-flash-latest"
+FALLBACK_MODEL_NAMES = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
 REQUEST_TIMEOUT_SECONDS = 60.0
 RETRY_DELAYS = [2, 5, 10]
 
@@ -32,22 +36,27 @@ def get_api_key(sidebar_override: Optional[str] = None) -> Optional[str]:
     """Retrieve Gemini API key following strict lookup hierarchy:
 
     1. Optional sidebar override box
-    2. st.secrets["GEMINI_API_KEY"] (safely inside try/except)
-    3. System environment / .env
+    2. st.secrets["GEMINI_API_KEY"] or st.secrets["GOOGLE_API_KEY"] (safely inside try/except)
+    3. System environment / .env (GEMINI_API_KEY or GOOGLE_API_KEY)
     Strips whitespace and quotes. Never prints or logs the key.
     """
     if sidebar_override and sidebar_override.strip():
         return sidebar_override.strip().strip("'\"")
 
     try:
-        if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-            key = st.secrets["GEMINI_API_KEY"]
-            if key and str(key).strip():
-                return str(key).strip().strip("'\"")
+        if hasattr(st, "secrets"):
+            if "GEMINI_API_KEY" in st.secrets:
+                key = st.secrets["GEMINI_API_KEY"]
+                if key and str(key).strip():
+                    return str(key).strip().strip("'\"")
+            if "GOOGLE_API_KEY" in st.secrets:
+                key = st.secrets["GOOGLE_API_KEY"]
+                if key and str(key).strip():
+                    return str(key).strip().strip("'\"")
     except Exception:
         pass
 
-    env_key = os.environ.get("GEMINI_API_KEY", "")
+    env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if env_key and env_key.strip():
         return env_key.strip().strip("'\"")
 
@@ -123,7 +132,7 @@ def call_gemini_vision(
     api_key: str,
     spinnerText: str = "Analyzing with AI..."
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Execute Gemini request with retry backoff, timeout, and JSON extraction."""
+    """Execute Gemini request with retry backoff, timeout, model fallback, and JSON extraction."""
     import google.generativeai as genai
 
     genai.configure(api_key=api_key)
@@ -134,47 +143,53 @@ def call_gemini_vision(
         shrunk = preprocess_image_for_gemini(b)
         pil_images.append(Image.open(io.BytesIO(shrunk)))
 
+    contents = [prompt] + pil_images
+    candidate_models = [MODEL_NAME] + [m for m in FALLBACK_MODEL_NAMES if m != MODEL_NAME]
+
     last_error = ""
 
-    for attempt, delay in enumerate([0] + RETRY_DELAYS):
-        if attempt > 0:
-            time.sleep(delay)
+    for target_model in candidate_models:
+        for attempt, delay in enumerate([0] + RETRY_DELAYS):
+            if attempt > 0:
+                time.sleep(delay)
 
-        try:
-            with st.spinner(f"{spinnerText} (attempt {attempt + 1})..."):
-                model = genai.GenerativeModel(
-                    MODEL_NAME,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                contents = [prompt] + pil_images
-                response = model.generate_content(
-                    contents,
-                    request_options={"timeout": REQUEST_TIMEOUT_SECONDS}
-                )
+            try:
+                with st.spinner(f"{spinnerText} (attempt {attempt + 1})..."):
+                    model = genai.GenerativeModel(
+                        target_model,
+                        generation_config={"response_mime_type": "application/json"}
+                    )
+                    response = model.generate_content(
+                        contents,
+                        request_options={"timeout": REQUEST_TIMEOUT_SECONDS}
+                    )
 
-                if not response or not response.text:
-                    last_error = "Empty response received from AI model."
-                    continue
+                    if not response or not response.text:
+                        last_error = "Empty response received from AI model."
+                        continue
 
-                raw = clean_json_response(response.text)
-                try:
-                    parsed = json.loads(raw)
-                    return parsed, None
-                except json.JSONDecodeError:
-                    # Retry parsing once by stripping extra characters
-                    match = re.search(r"(\{.*\}|\[.*\])", raw, re.DOTALL)
-                    if match:
-                        parsed = json.loads(match.group(1))
+                    raw = clean_json_response(response.text)
+                    try:
+                        parsed = json.loads(raw)
                         return parsed, None
-                    last_error = f"Invalid JSON returned: {raw[:200]}"
-                    continue
+                    except json.JSONDecodeError:
+                        # Retry parsing once by stripping extra characters
+                        match = re.search(r"(\{.*\}|\[.*\])", raw, re.DOTALL)
+                        if match:
+                            parsed = json.loads(match.group(1))
+                            return parsed, None
+                        last_error = f"Invalid JSON returned: {raw[:200]}"
+                        continue
 
-        except Exception as e:
-            err_str = str(e)
-            last_error = err_str
-            if not _is_retryable_error(err_str):
-                # Non-retryable error (e.g. invalid key or bad argument)
-                break
+            except Exception as e:
+                err_str = str(e)
+                last_error = err_str
+                # If model is not found or unsupported, immediately break to try next candidate model
+                if "404" in err_str or "not found" in err_str.lower() or "not supported" in err_str.lower() or "no longer available" in err_str.lower():
+                    break
+                if not _is_retryable_error(err_str):
+                    # Non-retryable error (e.g. invalid key or bad request)
+                    return None, last_error
 
     return None, last_error
 
@@ -362,31 +377,10 @@ def generate_tasks(
         "}"
     )
 
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-
-    for attempt, delay in enumerate([0] + RETRY_DELAYS):
-        if attempt > 0:
-            time.sleep(delay)
-        try:
-            with st.spinner(f"Generating custom photo checklist (attempt {attempt + 1})..."):
-                model = genai.GenerativeModel(
-                    MODEL_NAME,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                response = model.generate_content(
-                    prompt,
-                    request_options={"timeout": REQUEST_TIMEOUT_SECONDS}
-                )
-                if response and response.text:
-                    cleaned = clean_json_response(response.text)
-                    parsed = json.loads(cleaned)
-                    return parsed, None
-        except Exception as e:
-            if not _is_retryable_error(str(e)):
-                return {"tasks": []}, str(e)
-
-    return {"tasks": []}, "AI task generation timed out after retries."
+    data, err = call_gemini_vision(prompt, [], api_key, "Generating custom photo checklist")
+    if data and isinstance(data, dict):
+        return data, None
+    return {"tasks": []}, err
 
 
 # =========================================================================
