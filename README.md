@@ -44,18 +44,22 @@ Open your browser to `http://localhost:8501`.
 ## 🧪 Testing the Demo Case
 1. In the sidebar, click **"📥 Load Demo Case"**.
 2. 12 fictional orders across Swiggy, Zomato, and Blinkit will be loaded (spanning 6 weeks with repeat delayed orders from Spice Bowl Kitchen, 3 refund inquiries, and 2 link groups).
-3. Explore the **Add Incident**, **Timeline**, **Patterns**, and **Report** tabs.
-4. Click **"📄 Generate PDF Report"** in the Report tab to download a complete, traceable complaint evidence PDF.
+3. Explore the **Add Incident**, **Timeline**, **Patterns**, **Report**, and **AI Assistant** tabs.
+4. In the **AI Assistant** tab, run preset or custom tasks to see verified answers alongside the 6-point verification panel.
+5. In the **Report** tab, optionally include the verified complaint draft in your exported PDF.
 
 ---
 
 ## 📂 Project Architecture
 ```
 ProofLoop/
-├── app.py               # Streamlit user interface (UI only: 4 tabs)
+├── app.py               # Streamlit user interface (5 tabs)
+├── streamlit_app.py     # Streamlit Cloud deployment entrypoint
 ├── db.py                # SQLite database management (table incidents)
 ├── patterns.py          # Deterministic pattern computations with ID traceability
 ├── ai.py                # Gemini screenshot transcription & suggestion engine
+├── ai_assistant.py      # AI Assistant task handler & verified template generator
+├── verifier.py          # Plain-Python 6-point verification engine
 ├── report.py            # Structured PDF report generator using fpdf2
 ├── demo_data.py         # 12 fictional demo orders & synthetic receipts
 ├── uploads/             # Local evidence screenshot directory

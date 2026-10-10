@@ -86,6 +86,7 @@ def generate_pdf_report(
     case_name: str,
     incidents: List[Dict[str, Any]],
     output_path: Optional[str] = None,
+    complaint_draft: Optional[str] = None,
 ) -> bytes:
     """Generate a structured complaint evidence report PDF and return the PDF bytes."""
     metrics = patterns.analyze_patterns(incidents)
@@ -300,6 +301,25 @@ def generate_pdf_report(
         pdf.cell(126, 5.5, sanitize_pdf_text(fhash), border=1, ln=True)
 
     pdf.ln(6)
+
+    # 5. Optional Verified Complaint Draft
+    if complaint_draft and complaint_draft.strip():
+        if pdf.get_y() > 200:
+            pdf.add_page()
+        pdf.set_font("helvetica", "B", 12)
+        pdf.set_text_color(25, 30, 40)
+        pdf.cell(0, 7, "5. Draft Complaint Message", ln=True)
+        pdf.set_font("helvetica", "I", 8)
+        pdf.set_text_color(100, 110, 120)
+        pdf.cell(0, 5, "Draft message prepared from the evidence above:", ln=True)
+        pdf.ln(2)
+
+        pdf.set_fill_color(248, 250, 252)
+        pdf.set_draw_color(210, 218, 230)
+        pdf.set_font("helvetica", "", 7.8)
+        pdf.set_text_color(40, 45, 55)
+        pdf.multi_cell(180, 4.5, sanitize_pdf_text(complaint_draft.strip()), border=1, fill=True)
+        pdf.ln(6)
 
     # Closing Note
     if pdf.get_y() > 240:

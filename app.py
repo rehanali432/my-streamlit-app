@@ -16,6 +16,8 @@ import patterns
 import ai
 import report
 import demo_data
+import ai_assistant
+import verifier
 
 # Page Configuration
 st.set_page_config(
@@ -208,12 +210,13 @@ st.markdown(f'<div class="disclaimer-banner">⚖️ <strong>Notice:</strong> {DI
 # Fetch incidents for current case
 incidents = db.get_incidents(case_name=st.session_state.current_case)
 
-# 4 Tabs in required order: Add Incident, Timeline, Patterns, Report
-tab_add, tab_timeline, tab_patterns, tab_report = st.tabs([
+# 5 Tabs: Add Incident, Timeline, Patterns, Report, AI Assistant
+tab_add, tab_timeline, tab_patterns, tab_report, tab_assistant = st.tabs([
     "➕ Add Incident",
     "📅 Timeline",
     "📊 Patterns",
     "📄 Report",
+    "🤖 AI Assistant",
 ])
 
 
@@ -232,6 +235,8 @@ with tab_add:
 
     if "ai_suggestion" not in st.session_state:
         st.session_state.ai_suggestion = None
+    if "ai_warnings" not in st.session_state:
+        st.session_state.ai_warnings = []
     if "uploaded_file_path" not in st.session_state:
         st.session_state.uploaded_file_path = ""
     if "uploaded_file_hash" not in st.session_state:
@@ -255,7 +260,7 @@ with tab_add:
 
         col_img, col_ai = st.columns([1, 1])
         with col_img:
-            st.image(uploaded_file, caption=f"Uploaded: {uploaded_file.name}", width=None)
+            st.image(uploaded_file, caption=f"Uploaded: {uploaded_file.name}", width="stretch")
             st.code(f"SHA-256: {current_hash}", language="text")
 
         with col_ai:
@@ -276,13 +281,56 @@ with tab_add:
                 with st.spinner("Analyzing screenshot with Gemini..."):
                     ai_result, ai_err = ai.transcribe_order_screenshot(saved_path, api_key=custom_key)
                     if ai_result:
+                        val_warnings = []
+                        # 1. Date check: real YYYY-MM-DD and not in future
+                        r_date = ai_result.get("order_date")
+                        if r_date:
+                            try:
+                                parsed_d = datetime.date.fromisoformat(r_date.strip())
+                                if parsed_d > datetime.date.today():
+                                    val_warnings.append(f"Date '{r_date}' is in the future. Field cleared.")
+                                    ai_result["order_date"] = None
+                            except (ValueError, TypeError):
+                                val_warnings.append(f"Date '{r_date}' is not a valid YYYY-MM-DD. Field cleared.")
+                                ai_result["order_date"] = None
+
+                        # 2. Issue type check: in allowed list
+                        r_issue = ai_result.get("issue_type")
+                        if r_issue and r_issue not in db.VALID_ISSUE_TYPES:
+                            val_warnings.append(f"Issue type '{r_issue}' is not in allowed list. Field cleared.")
+                            ai_result["issue_type"] = None
+
+                        # 3. Amount check: positive number
+                        r_amt = ai_result.get("amount_inr")
+                        if r_amt is not None:
+                            try:
+                                num_amt = float(r_amt)
+                                if num_amt <= 0:
+                                    val_warnings.append("Amount must be a positive number. Field cleared.")
+                                    ai_result["amount_inr"] = None
+                            except (ValueError, TypeError):
+                                val_warnings.append("Amount could not be parsed as a positive number. Field cleared.")
+                                ai_result["amount_inr"] = None
+
+                        # 4. Platform check: non-empty string
+                        r_plat = ai_result.get("platform")
+                        if not r_plat or not str(r_plat).strip():
+                            val_warnings.append("Platform name was empty. Field cleared.")
+                            ai_result["platform"] = None
+
                         st.session_state.ai_suggestion = ai_result
+                        st.session_state.ai_warnings = val_warnings
+                        if val_warnings:
+                            st.warning("⚠️ Field Validation Warnings:\n" + "\n".join(f"- {w}" for w in val_warnings))
                         st.success("Screenshot transcribed successfully! Pre-filled fields below for your review.")
                     else:
                         st.warning(ai_err or "Could not transcribe screenshot. Manual entry is active.")
 
     st.markdown("---")
     st.markdown("### Order Incident Details (Review & Edit)")
+    if st.session_state.get("ai_warnings"):
+        for w in st.session_state.ai_warnings:
+            st.caption(f"⚠️ {w}")
 
     sug = st.session_state.ai_suggestion or {}
     default_date = sug.get("order_date") or ""
@@ -728,6 +776,15 @@ with tab_report:
             unsafe_allow_html=True,
         )
 
+        # Optional verified complaint draft checkbox
+        has_verified_draft = bool(st.session_state.get("last_verified_draft"))
+        include_draft = st.checkbox(
+            "Include the verified complaint draft in PDF report",
+            value=has_verified_draft,
+            disabled=not has_verified_draft,
+            help="Appends the verified draft message from the AI Assistant tab to the exported report." if has_verified_draft else "Generate a verified complaint draft in the AI Assistant tab first.",
+        )
+
         col_rep1, col_rep2 = st.columns(2)
 
         with col_rep1:
@@ -736,6 +793,7 @@ with tab_report:
                     pdf_bytes = report.generate_pdf_report(
                         case_name=st.session_state.current_case,
                         incidents=incidents,
+                        complaint_draft=st.session_state.get("last_verified_draft") if include_draft else None,
                     )
                     st.session_state.generated_pdf = pdf_bytes
                     st.success("PDF Report generated successfully!")
@@ -773,6 +831,149 @@ with tab_report:
                 "SHA-256 Checksum": inc["file_hash"][:16] + "..." if inc.get("file_hash") else "N/A",
             })
         st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
+
+
+# -------------------------------------------------------------
+# TAB 5: AI ASSISTANT
+# -------------------------------------------------------------
+with tab_assistant:
+    st.subheader("AI Complaint & Evidence Assistant")
+    st.caption("Ask questions or generate draft communications based strictly on saved case data. Plain-Python verification checks all claims before display.")
+
+    if not incidents:
+        st.info("No order incidents recorded in this case. Please add incidents or load the demo case first.")
+    else:
+        if "assistant_task" not in st.session_state:
+            st.session_state.assistant_task = ""
+        if "assistant_result" not in st.session_state:
+            st.session_state.assistant_result = None
+
+        st.markdown("#### Quick Preset Tasks")
+        presets = [
+            "Draft a complaint message to platform support",
+            "Summarise this case in 5 lines",
+            "Which store or platform has the most issues?",
+            "What evidence is missing or weak?",
+        ]
+
+        p_col1, p_col2 = st.columns(2)
+        task_to_run = None
+
+        with p_col1:
+            if st.button("📝 Draft a complaint message to platform support", width="stretch"):
+                task_to_run = presets[0]
+            if st.button("📋 Summarise this case in 5 lines", width="stretch"):
+                task_to_run = presets[1]
+
+        with p_col2:
+            if st.button("🏪 Which store or platform has the most issues?", width="stretch"):
+                task_to_run = presets[2]
+            if st.button("🔍 What evidence is missing or weak?", width="stretch"):
+                task_to_run = presets[3]
+
+        st.markdown("---")
+        c_col1, c_col2 = st.columns([3, 1])
+        with c_col1:
+            custom_input = st.text_input(
+                "Or enter a custom task / inquiry:",
+                placeholder="e.g. List all orders with missing items and their refund status",
+                key="custom_task_input_field",
+            )
+        with c_col2:
+            st.write("")
+            st.write("")
+            if st.button("🚀 Run Task", width="stretch"):
+                if custom_input.strip():
+                    task_to_run = custom_input.strip()
+                else:
+                    st.warning("Please enter a question or task.")
+
+        if task_to_run:
+            st.session_state.assistant_task = task_to_run
+            with st.spinner("Processing task and running plain-Python verification checks..."):
+                analysis_data = patterns.analyze_patterns(incidents)
+                res = ai_assistant.run_assistant_task(
+                    task=task_to_run,
+                    incidents=incidents,
+                    patterns_data=analysis_data,
+                )
+                st.session_state.assistant_result = res
+                if res.get("success") and "complaint" in task_to_run.lower() and res.get("answer"):
+                    st.session_state.last_verified_draft = res["answer"]
+
+        cur_res = st.session_state.assistant_result
+        if cur_res:
+            st.markdown("---")
+            st.markdown(f"### Result for: *\"{st.session_state.assistant_task}\"*")
+
+            if cur_res.get("success") and cur_res.get("answer"):
+                label_badge = "📋 Template Answer (No AI)" if cur_res.get("is_template") else "🤖 AI Generated (Verified)"
+                st.markdown(
+                    f"""
+                    <div style="background-color: #1A1F2C; border: 1px solid #FF5C1F; border-radius: 10px; padding: 20px 24px; margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <span style="font-weight: 700; color: #FF5C1F; font-size: 1.05rem;">Verified Assistant Response</span>
+                            <span style="background: rgba(255, 92, 31, 0.15); color: #FF5C1F; font-size: 0.8rem; font-weight: 600; padding: 4px 10px; border-radius: 4px;">{label_badge}</span>
+                        </div>
+                        <div style="color: #F8FAFC; white-space: pre-wrap; font-size: 0.95rem; line-height: 1.6;">{cur_res['answer']}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                meta_c1, meta_c2 = st.columns(2)
+                with meta_c1:
+                    cited_str = ", ".join(f"#{i}" for i in cur_res.get("cited_ids", [])) or "None"
+                    st.caption(f"📌 **Cited Incident IDs**: `{cited_str}`")
+                with meta_c2:
+                    nums_str = ", ".join(str(n) for n in cur_res.get("numbers_used", [])) or "None"
+                    st.caption(f"🔢 **Verified Numbers Used**: `{nums_str}`")
+
+                if cur_res.get("needs_more_info"):
+                    st.info("ℹ️ **Information needed to strengthen case**: " + "; ".join(cur_res["needs_more_info"]))
+            else:
+                st.error("❌ **Could not verify this answer.** The response failed verification checks after retry and was blocked.")
+                if st.button("📋 Load Verified Template Answer Instead", width="stretch"):
+                    analysis_data = patterns.analyze_patterns(incidents)
+                    tmpl_res = ai_assistant.generate_template_answer(
+                        st.session_state.assistant_task, incidents, analysis_data
+                    )
+                    _, tmpl_checks = verifier.verify_response(
+                        raw_json_str=None,
+                        parsed_output=tmpl_res,
+                        incidents=incidents,
+                        patterns_data=analysis_data,
+                        task_prompt=st.session_state.assistant_task,
+                    )
+                    st.session_state.assistant_result = {
+                        "success": True,
+                        "is_template": True,
+                        "answer": tmpl_res["answer"],
+                        "cited_ids": tmpl_res["cited_ids"],
+                        "numbers_used": tmpl_res["numbers_used"],
+                        "needs_more_info": tmpl_res["needs_more_info"],
+                        "check_results": tmpl_checks,
+                        "error_message": "Loaded verified template answer.",
+                    }
+                    if "complaint" in st.session_state.assistant_task.lower():
+                        st.session_state.last_verified_draft = tmpl_res["answer"]
+                    st.rerun()
+
+            # Verification Panel
+            st.markdown("#### 🔍 Verification Panel")
+            st.caption("Plain-Python verifier executes 6 deterministic checks before allowing output:")
+            for check in cur_res.get("check_results", []):
+                icon = "✅" if check["passed"] else "❌"
+                status_color = "#10B981" if check["passed"] else "#EF4444"
+                st.markdown(
+                    f"""
+                    <div style="background: #151A24; border-left: 4px solid {status_color}; padding: 10px 14px; margin-bottom: 8px; border-radius: 4px;">
+                        <span style="font-weight: 600; color: #E2E8F0;">{icon} {check['check_name']}</span>: 
+                        <span style="color: #94A3B8; font-size: 0.9rem;">{check['detail']}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 # -------------------------------------------------------------
