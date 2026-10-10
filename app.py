@@ -168,8 +168,13 @@ def init_session_state() -> None:
     """Initialize application session state keys."""
     db.init_db()
     if "current_order_id" not in st.session_state:
-        latest = db.get_latest_order()
-        st.session_state["current_order_id"] = latest["id"] if latest else None
+        st.session_state["current_order_id"] = None
+
+    if "receipt_uploader_nonce" not in st.session_state:
+        st.session_state["receipt_uploader_nonce"] = 0
+
+    if "product_uploader_nonce" not in st.session_state:
+        st.session_state["product_uploader_nonce"] = 0
 
     if "active_tab_index" not in st.session_state:
         st.session_state["active_tab_index"] = 0
@@ -240,14 +245,49 @@ with st.sidebar:
 
     if st.button("➕ Start New Order", width="stretch"):
         st.session_state["current_order_id"] = None
+        st.session_state["receipt_uploader_nonce"] = st.session_state.get("receipt_uploader_nonce", 0) + 1
+        st.session_state["product_uploader_nonce"] = st.session_state.get("product_uploader_nonce", 0) + 1
+        for form_key in [
+            "form_store", "form_platform", "form_order_id", "form_order_date",
+            "form_total_inr", "form_items", "form_claim_type", "form_analysis"
+        ]:
+            if form_key in st.session_state:
+                del st.session_state[form_key]
         st.session_state["active_tab_index"] = 0
+        st.success("New order started! All uploads and fields cleared.")
         st.rerun()
+
+    saved_orders = db.list_orders()
+    if saved_orders:
+        with st.expander("📂 Open Saved Order"):
+            order_labels = {
+                f"Order #{o['id']} ({o.get('order_id', 'Draft')} - {o.get('store', '')})": o["id"]
+                for o in saved_orders
+            }
+            selected_choice = st.selectbox("Select saved order", options=list(order_labels.keys()), key="sidebar_saved_order_select")
+            if st.button("Load Selected Order", width="stretch"):
+                st.session_state["current_order_id"] = order_labels[selected_choice]
+                for form_key in [
+                    "form_store", "form_platform", "form_order_id", "form_order_date",
+                    "form_total_inr", "form_items", "form_claim_type", "form_analysis"
+                ]:
+                    if form_key in st.session_state:
+                        del st.session_state[form_key]
+                st.rerun()
 
     with st.expander("🗑️ Delete All Data"):
         st.warning("This will remove all saved orders and uploaded files locally.")
         if st.button("Confirm Delete All", type="primary", width="stretch"):
             db.delete_all_data()
             st.session_state["current_order_id"] = None
+            st.session_state["receipt_uploader_nonce"] = st.session_state.get("receipt_uploader_nonce", 0) + 1
+            st.session_state["product_uploader_nonce"] = st.session_state.get("product_uploader_nonce", 0) + 1
+            for form_key in [
+                "form_store", "form_platform", "form_order_id", "form_order_date",
+                "form_total_inr", "form_items", "form_claim_type", "form_analysis"
+            ]:
+                if form_key in st.session_state:
+                    del st.session_state[form_key]
             st.session_state["active_tab_index"] = 0
             st.success("All local records removed.")
             st.rerun()
@@ -301,10 +341,11 @@ with tab_order:
 
     # Receipt Upload Section
     st.markdown("#### 1. Upload Order Receipt Screenshot")
+    receipt_nonce = st.session_state.get("receipt_uploader_nonce", 0)
     uploaded_receipt = st.file_uploader(
         "Upload receipt or invoice screenshot (PNG, JPG)",
         type=["png", "jpg", "jpeg"],
-        key="receipt_file_uploader",
+        key=f"receipt_file_uploader_{receipt_nonce}",
         help="Capture an order summary or invoice screen from your delivery app."
     )
 
@@ -333,10 +374,19 @@ with tab_order:
     if uploaded_receipt is not None:
         receipt_bytes_to_process = uploaded_receipt.getvalue()
         with receipt_col1:
-            st.image(receipt_bytes_to_process, caption="Uploaded Receipt", width="stretch")
+            st.image(receipt_bytes_to_process, caption="Uploaded Receipt Preview", width="stretch")
+            if st.button("🗑️ Remove Receipt Photo", key="btn_clear_uploaded_receipt", width="stretch"):
+                st.session_state["receipt_uploader_nonce"] = receipt_nonce + 1
+                st.rerun()
     elif current_order and current_order.get("receipt_path") and os.path.isfile(current_order["receipt_path"]):
         with receipt_col1:
-            st.image(current_order["receipt_path"], caption="Current Receipt in Order", width="stretch")
+            st.image(current_order["receipt_path"], caption="Current Saved Receipt", width="stretch")
+            if st.button("🗑️ Remove Saved Receipt", key="btn_clear_saved_receipt", width="stretch"):
+                with db.get_db_connection() as conn:
+                    conn.execute("UPDATE orders SET receipt_path = NULL, receipt_hash = NULL WHERE id = ?", (current_order["id"],))
+                    conn.commit()
+                st.session_state["receipt_uploader_nonce"] = receipt_nonce + 1
+                st.rerun()
 
     with receipt_col2:
         st.write("Use AI to transcribe store details, order number, total, and itemized lines automatically:")
@@ -444,10 +494,11 @@ with tab_order:
     st.markdown("#### 3. Optional: Initial Product Photo")
     st.caption("If you have taken a photo of the affected item, upload it here to help tailor the checklist:")
 
+    prod_nonce = st.session_state.get("product_uploader_nonce", 0)
     uploaded_product = st.file_uploader(
         "Upload initial product photo (optional)",
         type=["png", "jpg", "jpeg"],
-        key="product_file_uploader"
+        key=f"product_file_uploader_{prod_nonce}"
     )
 
     prod_col1, prod_col2 = st.columns([1, 1])
@@ -455,10 +506,21 @@ with tab_order:
     if uploaded_product is not None:
         product_bytes_to_process = uploaded_product.getvalue()
         with prod_col1:
-            st.image(product_bytes_to_process, caption="Uploaded Product Photo", width="stretch")
+            st.image(product_bytes_to_process, caption="Uploaded Product Photo Preview", width="stretch")
+            if st.button("🗑️ Remove Product Photo", key="btn_clear_uploaded_product", width="stretch"):
+                st.session_state["product_uploader_nonce"] = prod_nonce + 1
+                st.session_state["form_analysis"] = {}
+                st.rerun()
     elif current_order and current_order.get("product_photo_path") and os.path.isfile(current_order["product_photo_path"]):
         with prod_col1:
-            st.image(current_order["product_photo_path"], caption="Current Product Photo in Order", width="stretch")
+            st.image(current_order["product_photo_path"], caption="Current Saved Product Photo", width="stretch")
+            if st.button("🗑️ Remove Saved Product Photo", key="btn_clear_saved_product", width="stretch"):
+                with db.get_db_connection() as conn:
+                    conn.execute("UPDATE orders SET product_photo_path = NULL, product_hash = NULL WHERE id = ?", (current_order["id"],))
+                    conn.commit()
+                st.session_state["product_uploader_nonce"] = prod_nonce + 1
+                st.session_state["form_analysis"] = {}
+                st.rerun()
 
     with prod_col2:
         if st.button("🔍 Analyse Product Photo with AI", width="stretch", disabled=(product_bytes_to_process is None and not (current_order and current_order.get("product_photo_path")))):
