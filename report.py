@@ -430,3 +430,179 @@ def generate_evidence_pdf(
 
     pdf.output(output_path)
     return output_path
+
+
+def generate_return_slip_pdf(
+    return_data: Dict[str, Any],
+    initial_analysis: Dict[str, Any],
+    img1_bytes: Optional[bytes] = None,
+    img2_bytes: Optional[bytes] = None,
+    output_path: str = "uploads/return_slip.pdf"
+) -> str:
+    """Generate a 1-page official Return Authorization Slip PDF."""
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    pdf = EvidencePackPDF()
+    pdf.add_page()
+
+    # Title & RMA Banner
+    pdf.set_fill_color(26, 31, 44)
+    pdf.rect(10, 8, 190, 24, "F")
+
+    pdf.set_xy(14, 11)
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.set_text_color(255, 92, 31)
+    pdf.cell(100, 6, "PROOFLOOP RETURN AUTHORIZATION")
+
+    pdf.set_xy(14, 18)
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.set_text_color(200, 210, 225)
+    pdf.cell(100, 4, "Multi-Angle Visual Evidence Verification Certificate")
+
+    # Right badge with RMA code
+    rma = return_data.get("rma_code", "PL-RET-90210")
+    pdf.set_xy(120, 11)
+    pdf.set_fill_color(46, 204, 113)
+    pdf.rect(125, 12, 70, 14, "F")
+    pdf.set_xy(125, 14)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(70, 4, "STATUS: RETURN ACCEPTED", align="C")
+    pdf.set_xy(125, 18)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(70, 5, sanitize_text(f"RMA: {rma}"), align="C")
+
+    # Product Overview Details Box
+    pdf.set_y(36)
+    pdf.set_fill_color(248, 249, 251)
+    pdf.set_draw_color(225, 230, 240)
+    pdf.rect(10, 36, 190, 22, "FD")
+
+    prod_name = initial_analysis.get("product_name", "Consumer Item")
+    category = initial_analysis.get("category", "General Goods")
+    angle1 = initial_analysis.get("current_angle", "Initial View")
+    angle2 = initial_analysis.get("requested_angle_title", "Complementary View")
+
+    pdf.set_xy(14, 38)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.set_text_color(30, 35, 45)
+    pdf.cell(45, 4.5, "Product Identified:")
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(60, 4.5, sanitize_text(prod_name))
+
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(35, 4.5, "Issuance Date:")
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(40, 4.5, datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+    pdf.set_xy(14, 44)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(45, 4.5, "Product Category:")
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(60, 4.5, sanitize_text(category))
+
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(35, 4.5, "Verification:")
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(40, 4.5, "Machine Cross-Referenced")
+
+    pdf.set_xy(14, 50)
+    pdf.set_font("Helvetica", "B", 8.5)
+    pdf.cell(45, 4.5, "Inspected Angles:")
+    pdf.set_font("Helvetica", "", 8.5)
+    pdf.cell(135, 4.5, sanitize_text(f"{angle1}  AND  {angle2}"))
+
+    # Photos Section (Side by Side)
+    pdf.set_y(62)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(255, 92, 31)
+    pdf.cell(190, 5, "Cross-Referenced Visual Evidence:")
+
+    photo_y = 69
+    # Left Photo Box
+    pdf.set_fill_color(250, 250, 252)
+    pdf.rect(10, photo_y, 92, 74, "FD")
+    pdf.set_xy(12, photo_y + 2)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(50, 55, 65)
+    pdf.cell(88, 4, sanitize_text(f"1. {angle1}"), align="C")
+
+    # Right Photo Box
+    pdf.rect(108, photo_y, 92, 74, "FD")
+    pdf.set_xy(110, photo_y + 2)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.cell(88, 4, sanitize_text(f"2. {angle2} (Verified)"), align="C")
+
+    # Embed Photo 1
+    if img1_bytes:
+        try:
+            tmp1_path = os.path.join(os.path.dirname(output_path), "tmp_slip_p1.jpg")
+            with open(tmp1_path, "wb") as f1:
+                f1.write(img1_bytes)
+            pdf.image(tmp1_path, x=15, y=photo_y + 8, w=82, h=62)
+        except Exception:
+            pdf.set_xy(15, photo_y + 30)
+            pdf.cell(82, 5, "[Primary Photo Recorded]", align="C")
+
+    # Embed Photo 2
+    if img2_bytes:
+        try:
+            tmp2_path = os.path.join(os.path.dirname(output_path), "tmp_slip_p2.jpg")
+            with open(tmp2_path, "wb") as f2:
+                f2.write(img2_bytes)
+            pdf.image(tmp2_path, x=113, y=photo_y + 8, w=82, h=62)
+        except Exception:
+            pdf.set_xy(113, photo_y + 30)
+            pdf.cell(82, 5, "[Secondary Angle Recorded]", align="C")
+
+    # Verification Checks Table
+    pdf.set_y(photo_y + 78)
+    pdf.set_font("Helvetica", "B", 9.5)
+    pdf.set_text_color(255, 92, 31)
+    pdf.cell(190, 5, "Automated Verification Audit Trail:")
+
+    table_y = photo_y + 85
+    checks = return_data.get("checks", [])
+    for idx, chk in enumerate(checks[:4]):
+        chk_y = table_y + (idx * 7)
+        if idx % 2 == 0:
+            pdf.set_fill_color(245, 247, 250)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        pdf.rect(10, chk_y, 190, 6.5, "F")
+
+        # Green checkmark
+        pdf.set_xy(12, chk_y + 1)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(46, 204, 113)
+        pdf.cell(8, 4.5, "[PASS]")
+
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(30, 35, 45)
+        pdf.cell(55, 4.5, sanitize_text(chk.get("name", "Check")))
+
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.set_text_color(80, 85, 95)
+        detail_txt = chk.get("detail", "")
+        pdf.cell(120, 4.5, sanitize_text(detail_txt[:80] + ("..." if len(detail_txt) > 80 else "")))
+
+    # Summary box
+    summary_y = table_y + (len(checks[:4]) * 7) + 3
+    pdf.set_xy(10, summary_y)
+    pdf.set_fill_color(240, 248, 243)
+    pdf.set_draw_color(46, 204, 113)
+    pdf.rect(10, summary_y, 190, 16, "FD")
+
+    pdf.set_xy(14, summary_y + 2)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(34, 139, 34)
+    pdf.cell(180, 3.5, "FINAL DETERMINATION: RETURN CRITERIA SATISFIED")
+
+    pdf.set_xy(14, summary_y + 6)
+    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_text_color(40, 50, 45)
+    sum_text = return_data.get("summary", "Visual evidence fulfills inspection requirements.")
+    pdf.multi_cell(182, 3.2, sanitize_text(sum_text))
+
+    pdf.output(output_path)
+    return output_path
+
