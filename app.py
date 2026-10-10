@@ -935,3 +935,10 @@ st.markdown(
 from demo_flow import render_guided_demo
 
 render_guided_demo()
+
+# =========================================================================
+# AI RETURN ASSISTANT (INTERACTIVE CHATBOT)
+# =========================================================================
+from chat_assistant import render_chat_assistant
+
+render_chat_assistant()
