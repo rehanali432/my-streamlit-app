@@ -928,3 +928,10 @@ st.markdown(
     f'<div class="footer-disclaimer">{FOOTER_DISCLAIMER}</div>',
     unsafe_allow_html=True
 )
+
+# =========================================================================
+# GUIDED DEMO (SIMULATED)
+# =========================================================================
+from demo_flow import render_guided_demo
+
+render_guided_demo()
