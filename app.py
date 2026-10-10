@@ -278,8 +278,8 @@ with tab_add:
             )
 
             if st.button("🤖 Read with AI", width="stretch"):
-                with st.spinner("Analyzing screenshot with Gemini..."):
-                    ai_result, ai_err = ai.transcribe_order_screenshot(saved_path, api_key=custom_key)
+                with st.spinner("Reading screenshot..."):
+                    ai_result, friendly_err, tech_err = ai.transcribe_order_screenshot(saved_path, api_key=custom_key)
                     if ai_result:
                         val_warnings = []
                         # 1. Date check: real YYYY-MM-DD and not in future
@@ -324,7 +324,10 @@ with tab_add:
                             st.warning("⚠️ Field Validation Warnings:\n" + "\n".join(f"- {w}" for w in val_warnings))
                         st.success("Screenshot transcribed successfully! Pre-filled fields below for your review.")
                     else:
-                        st.warning(ai_err or "Could not transcribe screenshot. Manual entry is active.")
+                        st.warning(friendly_err or "Gemini is slow right now. Please try again, or enter the details manually.")
+                        if tech_err:
+                            with st.expander("Technical details", expanded=False):
+                                st.code(tech_err)
 
     st.markdown("---")
     st.markdown("### Order Incident Details (Review & Edit)")

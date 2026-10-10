@@ -15,11 +15,9 @@ import google.generativeai as genai
 
 import patterns
 import verifier
+from ai import call_gemini_with_retry, REQUEST_TIMEOUT_SECONDS, MODEL_NAME
 
 load_dotenv()
-
-# Model name constant at top of file
-MODEL_NAME = "gemini-3.8-flash"
 
 
 def get_api_key(explicit_key: Optional[str] = None) -> Optional[str]:
@@ -317,7 +315,14 @@ def call_gemini_api(
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(user_message, request_options={"timeout": 12.0})
+        response, exc = call_gemini_with_retry(
+            model=model,
+            contents=user_message,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+
+        if exc is not None:
+            return None, None, f"AI service error: {str(exc)}"
 
         if not response or not response.text:
             return None, None, "AI returned an empty response."
