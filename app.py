@@ -1,992 +1,930 @@
-"""PatternProof - Delivery Order Complaint & Evidence Organizer.
+"""PatternProof: Delivery Evidence Coach.
 
-Main Streamlit Application (UI Only).
-Coordinates db.py, patterns.py, ai.py, report.py, and demo_data.py.
-Follows all hard rules: strictly neutral language, traceable order IDs, no blame assignment.
+Streamlit application guiding customers through capturing structured photographic
+evidence for delivery order disputes.
 """
 
 import os
+import io
+import json
 import hashlib
-import datetime
-import pandas as pd
+from datetime import datetime, date
+from typing import Optional, Dict, Any, List
+
 import streamlit as st
+import pandas as pd
+from PIL import Image
 
 import db
-import patterns
 import ai
-import report
-import demo_data
-import ai_assistant
+import tasks
 import verifier
+import report
+import demo
 
 # Page Configuration
 st.set_page_config(
-    page_title="PatternProof",
+    page_title="PatternProof: Delivery Evidence Coach",
     page_icon="📦",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
-# Mandatory Disclaimer constant
-DISCLAIMER_TEXT = (
+# Mandatory Neutral Disclaimer
+FOOTER_DISCLAIMER = (
     "PatternProof organises user-provided evidence. "
-    "It does not verify authenticity, assign blame, or provide legal advice."
+    "It does not verify authenticity, decide claims, or provide legal advice."
 )
 
-# Custom CSS for polished, high-contrast modern UI with #FF5C1F accent
-st.markdown(
-    """
-    <style>
-    /* Metric Card Styling */
-    .metric-card {
-        background-color: #1A1F2C;
-        border: 1px solid #2D3748;
+# Custom CSS for dark theme with #FF5C1F accent
+CUSTOM_CSS = """
+<style>
+    /* Global accent and styles */
+    :root {
+        --accent-orange: #FF5C1F;
+        --bg-dark: #0E1117;
+        --card-bg: #1A1F2C;
+        --card-border: #2B3245;
+        --text-primary: #E0E6ED;
+        --text-muted: #8E9BAE;
+    }
+
+    /* Main container adjustments */
+    .stApp {
+        background-color: var(--bg-dark);
+        color: var(--text-primary);
+    }
+
+    /* Header styling */
+    .app-header {
+        padding: 1rem 0 1.5rem 0;
+        border-bottom: 1px solid var(--card-border);
+        margin-bottom: 1.5rem;
+    }
+    .app-title {
+        font-size: 2.2rem;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        color: #FFFFFF;
+        margin: 0;
+    }
+    .app-title span {
+        color: var(--accent-orange);
+    }
+    .app-subtitle {
+        color: var(--text-muted);
+        font-size: 1rem;
+        margin-top: 0.3rem;
+    }
+
+    /* Card containers */
+    .evidence-card {
+        background-color: var(--card-bg);
+        border: 1px solid var(--card-border);
         border-radius: 10px;
-        padding: 18px 20px;
-        margin-bottom: 16px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
     }
-    .metric-card:hover {
-        border-color: #FF5C1F;
-    }
-    .metric-title {
-        color: #94A3B8;
-        font-size: 0.85rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 6px;
-    }
-    .metric-value {
-        color: #F8FAFC;
-        font-size: 1.6rem;
-        font-weight: 700;
-        margin-bottom: 6px;
-    }
-    .metric-trace {
-        color: #FF5C1F;
-        font-size: 0.8rem;
-        font-weight: 500;
-        background: rgba(255, 92, 31, 0.12);
-        padding: 3px 8px;
-        border-radius: 4px;
+
+    /* Badge styles */
+    .status-badge {
         display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
     }
-    .metric-sub {
-        color: #94A3B8;
-        font-size: 0.82rem;
-        margin-top: 6px;
+    .badge-passed {
+        background-color: rgba(46, 204, 113, 0.15);
+        color: #2ECC71;
+        border: 1px solid #2ECC71;
     }
-    /* Neutral Disclaimer Banner */
-    .disclaimer-banner {
-        background-color: #161B26;
-        border-left: 4px solid #FF5C1F;
-        padding: 10px 16px;
-        border-radius: 4px;
-        margin: 12px 0 20px 0;
+    .badge-partial {
+        background-color: rgba(243, 156, 18, 0.15);
+        color: #F39C12;
+        border: 1px solid #F39C12;
+    }
+    .badge-retake {
+        background-color: rgba(231, 76, 60, 0.15);
+        color: #E74C3C;
+        border: 1px solid #E74C3C;
+    }
+    .badge-confirmed {
+        background-color: rgba(52, 152, 219, 0.15);
+        color: #3498DB;
+        border: 1px solid #3498DB;
+    }
+    .badge-open {
+        background-color: rgba(142, 155, 174, 0.15);
+        color: #8E9BAE;
+        border: 1px solid #8E9BAE;
+    }
+    .badge-demo {
+        background-color: rgba(255, 92, 31, 0.2);
+        color: var(--accent-orange);
+        border: 1px solid var(--accent-orange);
+        padding: 0.3rem 0.8rem;
+        border-radius: 6px;
+        font-weight: 700;
         font-size: 0.85rem;
-        color: #CBD5E1;
     }
+
+    /* Retake advice box */
+    .retake-box {
+        background-color: rgba(231, 76, 60, 0.08);
+        border-left: 4px solid #E74C3C;
+        padding: 0.75rem 1rem;
+        border-radius: 4px;
+        margin-top: 0.75rem;
+    }
+
+    /* Instruction callout */
+    .instruction-callout {
+        background-color: #151923;
+        border: 1px solid #262D3D;
+        border-radius: 6px;
+        padding: 0.8rem 1rem;
+        margin: 0.5rem 0;
+        font-size: 0.95rem;
+    }
+
     /* Footer */
-    .app-footer {
+    .footer-disclaimer {
         text-align: center;
-        padding: 24px 0 10px 0;
-        border-top: 1px solid #2D3748;
-        margin-top: 40px;
+        color: var(--text-muted);
         font-size: 0.82rem;
-        color: #94A3B8;
+        padding: 2rem 0 1rem 0;
+        border-top: 1px solid var(--card-border);
+        margin-top: 2.5rem;
     }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# Initialize database
-db.init_db()
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
-def get_file_hash(file_bytes: bytes) -> str:
-    """Compute SHA-256 hash of file content."""
-    hasher = hashlib.sha256()
-    hasher.update(file_bytes)
-    return hasher.hexdigest()
+def init_session_state() -> None:
+    """Initialize application session state keys."""
+    db.init_db()
+    if "current_order_id" not in st.session_state:
+        latest = db.get_latest_order()
+        st.session_state["current_order_id"] = latest["id"] if latest else None
+
+    if "active_tab_index" not in st.session_state:
+        st.session_state["active_tab_index"] = 0
+
+    if "demo_mode_toggle" not in st.session_state:
+        st.session_state["demo_mode_toggle"] = False
+
+    if "sidebar_key_override" not in st.session_state:
+        st.session_state["sidebar_key_override"] = ""
 
 
-# -------------------------------------------------------------
+init_session_state()
+
+# Determine effective API Key and Demo Mode state
+sidebar_key = st.session_state.get("sidebar_key_override", "").strip()
+detected_api_key = ai.get_api_key(sidebar_key)
+is_demo_mode = st.session_state.get("demo_mode_toggle", False) or (detected_api_key is None)
+
+
+# =========================================================================
 # SIDEBAR
-# -------------------------------------------------------------
+# =========================================================================
 with st.sidebar:
-    st.markdown("## 📦 **PatternProof**")
-    st.caption("Delivery Order Evidence & Complaint Organizer")
+    st.markdown("### 📦 PatternProof")
+    st.markdown("**Delivery Evidence Coach**")
+    st.caption("Structured photographic guidance for delivery disputes")
 
-    # Case Selector
-    case_names = db.get_case_names()
-    if "current_case" not in st.session_state:
-        st.session_state.current_case = case_names[0] if case_names else "Demo Case - Food & Grocery Orders"
+    st.markdown("---")
 
-    selected_case = st.selectbox(
-        "Active Order Record:",
-        options=case_names + ["+ Create New Case..."],
-        index=case_names.index(st.session_state.current_case) if st.session_state.current_case in case_names else 0,
-    )
-
-    if selected_case == "+ Create New Case...":
-        new_case_input = st.text_input("Enter New Case Name:")
-        if st.button("Set Case", key="btn_create_case", width="stretch"):
-            if new_case_input.strip():
-                st.session_state.current_case = new_case_input.strip()
-                st.rerun()
+    # API Key Status Box
+    if detected_api_key:
+        st.success("● Gemini Vision Connected")
     else:
-        st.session_state.current_case = selected_case
+        st.info("○ Demo Mode Available (No Key Required)")
 
-    st.divider()
+    with st.expander("🔑 Gemini API Key Settings"):
+        key_input = st.text_input(
+            "API Key Override",
+            value=st.session_state.get("sidebar_key_override", ""),
+            type="password",
+            placeholder="AIzaSy...",
+            help="Optional override. If blank, uses st.secrets or .env."
+        )
+        if key_input != st.session_state.get("sidebar_key_override", ""):
+            st.session_state["sidebar_key_override"] = key_input
+            st.rerun()
 
-    # Load Demo Case
-    st.markdown("### Demo Actions")
-    if st.button("📥 Load Demo Case", width="stretch", help="Load 12 fictional food & grocery order records"):
-        count = demo_data.load_demo_case(case_name="Demo Case - Food & Grocery Orders")
-        st.session_state.current_case = "Demo Case - Food & Grocery Orders"
-        st.success(f"Loaded {count} fictional order records.")
+    # Demo Mode Toggle
+    demo_toggle = st.toggle(
+        "Demo mode (simulated AI)",
+        value=st.session_state.get("demo_mode_toggle", False),
+        help="Simulates AI vision and verification using deterministic responses."
+    )
+    if demo_toggle != st.session_state.get("demo_mode_toggle", False):
+        st.session_state["demo_mode_toggle"] = demo_toggle
         st.rerun()
 
-    # Delete Data
-    with st.expander("🗑️ Delete Data", expanded=False):
-        st.warning("Irreversible action. Deletes logged records.")
-        confirm_del_case = st.checkbox("Confirm delete active case only")
-        if st.button("Delete Active Case Records", type="secondary", width="stretch"):
-            if confirm_del_case:
-                db.delete_all_incidents(case_name=st.session_state.current_case)
-                st.success(f"Records for '{st.session_state.current_case}' deleted.")
-                st.rerun()
-            else:
-                st.error("Please check the confirmation box.")
+    st.markdown("---")
 
-        confirm_del_all = st.checkbox("Confirm delete ALL cases")
-        if st.button("Delete Entire Database", type="secondary", width="stretch"):
-            if confirm_del_all:
-                db.delete_all_incidents()
-                st.success("All database records cleared.")
-                st.rerun()
-            else:
-                st.error("Please check the confirmation box.")
+    # Order Management Buttons
+    if st.button("✨ Load Demo Order", width="stretch"):
+        with st.spinner("Generating demo delivery order and checklist..."):
+            new_oid = demo.load_demo_order()
+            st.session_state["current_order_id"] = new_oid
+            st.session_state["active_tab_index"] = 1
+            st.success("Demo order loaded successfully!")
+            st.rerun()
 
-    st.divider()
+    if st.button("➕ Start New Order", width="stretch"):
+        st.session_state["current_order_id"] = None
+        st.session_state["active_tab_index"] = 0
+        st.rerun()
 
-    # System Status & Local Privacy Note
-    api_key_set = bool(ai.get_api_key())
-    if api_key_set:
-        st.success("🟢 Gemini AI: Configured (ready for receipt transcription)")
-    else:
-        st.info("🟡 Gemini AI: Not configured (manual entry is active)")
+    with st.expander("🗑️ Delete All Data"):
+        st.warning("This will remove all saved orders and uploaded files locally.")
+        if st.button("Confirm Delete All", type="primary", width="stretch"):
+            db.delete_all_data()
+            st.session_state["current_order_id"] = None
+            st.session_state["active_tab_index"] = 0
+            st.success("All local records removed.")
+            st.rerun()
 
-    st.caption("🔒 **Device Privacy**: All screenshots, file hashes, and order records stay strictly stored on this local computer.")
+    st.markdown("---")
+    st.caption("🔒 **Local Storage Note**: All orders and photos are stored strictly on your local computer (`patternproof.db` and `uploads/`).")
 
 
-# -------------------------------------------------------------
-# MAIN APP HEADER & TABS
-# -------------------------------------------------------------
-st.markdown(
-    f"""
-    <div style="display: flex; justify-content: space-between; align-items: baseline;">
-        <div>
-            <h1 style="margin-bottom: 2px;">PatternProof</h1>
-            <p style="color: #94A3B8; font-size: 1rem; margin-top: 0;">
-                Delivery Order Evidence, Timeline & Complaint Report Organizer
-            </p>
-        </div>
-        <div>
-            <span style="background: #1A1F2C; border: 1px solid #FF5C1F; color: #F8FAFC; padding: 6px 14px; border-radius: 6px; font-weight: 600;">
-                Case: {st.session_state.current_case}
-            </span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# =========================================================================
+# HEADER & DEMO BADGE
+# =========================================================================
+header_col1, header_col2 = st.columns([4, 2])
+with header_col1:
+    st.markdown(
+        '<div class="app-header">'
+        '<div class="app-title">PatternProof <span>Evidence Coach</span></div>'
+        '<div class="app-subtitle">Upload your order receipt, receive a tailored photo checklist, and compile an evidence pack.</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+with header_col2:
+    if is_demo_mode:
+        st.markdown(
+            '<div style="text-align: right; padding-top: 1.5rem;">'
+            '<span class="badge-demo">⚡ DEMO MODE: simulated AI</span>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
-# Mandatory disclaimer banner
-st.markdown(f'<div class="disclaimer-banner">⚖️ <strong>Notice:</strong> {DISCLAIMER_TEXT}</div>', unsafe_allow_html=True)
+# Fetch Current Order Record
+current_order = None
+if st.session_state.get("current_order_id"):
+    current_order = db.get_order(st.session_state["current_order_id"])
 
-# Fetch incidents for current case
-incidents = db.get_incidents(case_name=st.session_state.current_case)
-
-# 5 Tabs: Add Incident, Timeline, Patterns, Report, AI Assistant
-tab_add, tab_timeline, tab_patterns, tab_report, tab_assistant = st.tabs([
-    "➕ Add Incident",
-    "📅 Timeline",
-    "📊 Patterns",
-    "📄 Report",
-    "🤖 AI Assistant",
+# Main Navigation Tabs
+tab_order, tab_tasks, tab_pack = st.tabs([
+    "1. Order Details & Receipt",
+    "2. Photo Checklist Tasks",
+    "3. Evidence Pack Export"
 ])
 
 
-# -------------------------------------------------------------
-# TAB 1: ADD INCIDENT
-# -------------------------------------------------------------
-with tab_add:
-    st.subheader("Record Delivery Order Evidence")
-    st.caption("Upload an order receipt or support chat screenshot. Gemini suggests fields. You review and edit everything before saving.")
+# =========================================================================
+# TAB 1: ORDER DETAILS & RECEIPT
+# =========================================================================
+with tab_order:
+    st.markdown("### Step 1: Order Information & Primary Proof")
 
-    uploaded_file = st.file_uploader(
-        "Upload order evidence screenshot (PNG or JPG):",
+    # Mandatory One-Time Privacy Tip
+    st.info("ℹ️ **Privacy Tip**: Hide your address and phone number before uploading receipts.")
+
+    # Receipt Upload Section
+    st.markdown("#### 1. Upload Order Receipt Screenshot")
+    uploaded_receipt = st.file_uploader(
+        "Upload receipt or invoice screenshot (PNG, JPG)",
         type=["png", "jpg", "jpeg"],
-        key="order_file_uploader",
+        key="receipt_file_uploader",
+        help="Capture an order summary or invoice screen from your delivery app."
     )
 
-    if "ai_suggestion" not in st.session_state:
-        st.session_state.ai_suggestion = None
-    if "ai_warnings" not in st.session_state:
-        st.session_state.ai_warnings = []
-    if "uploaded_file_path" not in st.session_state:
-        st.session_state.uploaded_file_path = ""
-    if "uploaded_file_hash" not in st.session_state:
-        st.session_state.uploaded_file_hash = ""
+    # State container for AI-transcribed receipt data
+    if "form_store" not in st.session_state:
+        st.session_state["form_store"] = current_order.get("store", "") if current_order else ""
+    if "form_platform" not in st.session_state:
+        st.session_state["form_platform"] = current_order.get("platform", "") if current_order else ""
+    if "form_order_id" not in st.session_state:
+        st.session_state["form_order_id"] = current_order.get("order_id", "") if current_order else ""
+    if "form_order_date" not in st.session_state:
+        st.session_state["form_order_date"] = current_order.get("order_date", "") if current_order else ""
+    if "form_total_inr" not in st.session_state:
+        st.session_state["form_total_inr"] = str(current_order.get("total_inr", "")) if current_order and current_order.get("total_inr") is not None else ""
+    if "form_items" not in st.session_state:
+        st.session_state["form_items"] = current_order.get("items", []) if current_order else []
+    if "form_claim_type" not in st.session_state:
+        st.session_state["form_claim_type"] = current_order.get("claim_type", tasks.CLAIM_TYPES[0]) if current_order else tasks.CLAIM_TYPES[0]
+    if "form_analysis" not in st.session_state:
+        st.session_state["form_analysis"] = current_order.get("product_analysis", {}) if current_order else {}
 
-    current_hash = ""
-    saved_path = ""
+    receipt_col1, receipt_col2 = st.columns([1, 1])
 
-    if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        current_hash = get_file_hash(file_bytes)
-        os.makedirs(demo_data.UPLOADS_DIR, exist_ok=True)
-        filename = f"order_{current_hash[:12]}_{uploaded_file.name}"
-        saved_path = os.path.join(demo_data.UPLOADS_DIR, filename)
+    # Show preview if available
+    receipt_bytes_to_process = None
+    if uploaded_receipt is not None:
+        receipt_bytes_to_process = uploaded_receipt.getvalue()
+        with receipt_col1:
+            st.image(receipt_bytes_to_process, caption="Uploaded Receipt", width="stretch")
+    elif current_order and current_order.get("receipt_path") and os.path.isfile(current_order["receipt_path"]):
+        with receipt_col1:
+            st.image(current_order["receipt_path"], caption="Current Receipt in Order", width="stretch")
 
-        with open(saved_path, "wb") as f:
-            f.write(file_bytes)
+    with receipt_col2:
+        st.write("Use AI to transcribe store details, order number, total, and itemized lines automatically:")
+        if st.button("🤖 Read Receipt with AI", width="stretch", disabled=(receipt_bytes_to_process is None and not (current_order and current_order.get("receipt_path")))):
+            target_bytes = receipt_bytes_to_process
+            if not target_bytes and current_order and current_order.get("receipt_path"):
+                with open(current_order["receipt_path"], "rb") as rf:
+                    target_bytes = rf.read()
 
-        st.session_state.uploaded_file_path = saved_path
-        st.session_state.uploaded_file_hash = current_hash
-
-        col_img, col_ai = st.columns([1, 1])
-        with col_img:
-            st.image(uploaded_file, caption=f"Uploaded: {uploaded_file.name}", width="stretch")
-            st.code(f"SHA-256: {current_hash}", language="text")
-
-        with col_ai:
-            st.markdown("#### Automated Assistant")
-            st.markdown(
-                "Gemini reads visible order receipts or chat screenshots and suggests fields. "
-                "All suggestions require your review before saving."
-            )
-
-            custom_key = st.text_input(
-                "Gemini API Key (optional override):",
-                type="password",
-                value="",
-                placeholder="Leave blank to use .env key",
-            )
-
-            if st.button("🤖 Read with AI", width="stretch"):
-                with st.spinner("Reading screenshot..."):
-                    ai_result, friendly_err, tech_err = ai.transcribe_order_screenshot(saved_path, api_key=custom_key)
-                    if ai_result:
-                        val_warnings = []
-                        # 1. Date check: real YYYY-MM-DD and not in future
-                        r_date = ai_result.get("order_date")
-                        if r_date:
-                            try:
-                                parsed_d = datetime.date.fromisoformat(r_date.strip())
-                                if parsed_d > datetime.date.today():
-                                    val_warnings.append(f"Date '{r_date}' is in the future. Field cleared.")
-                                    ai_result["order_date"] = None
-                            except (ValueError, TypeError):
-                                val_warnings.append(f"Date '{r_date}' is not a valid YYYY-MM-DD. Field cleared.")
-                                ai_result["order_date"] = None
-
-                        # 2. Issue type check: in allowed list
-                        r_issue = ai_result.get("issue_type")
-                        if r_issue and r_issue not in db.VALID_ISSUE_TYPES:
-                            val_warnings.append(f"Issue type '{r_issue}' is not in allowed list. Field cleared.")
-                            ai_result["issue_type"] = None
-
-                        # 3. Amount check: positive number
-                        r_amt = ai_result.get("amount_inr")
-                        if r_amt is not None:
-                            try:
-                                num_amt = float(r_amt)
-                                if num_amt <= 0:
-                                    val_warnings.append("Amount must be a positive number. Field cleared.")
-                                    ai_result["amount_inr"] = None
-                            except (ValueError, TypeError):
-                                val_warnings.append("Amount could not be parsed as a positive number. Field cleared.")
-                                ai_result["amount_inr"] = None
-
-                        # 4. Platform check: non-empty string
-                        r_plat = ai_result.get("platform")
-                        if not r_plat or not str(r_plat).strip():
-                            val_warnings.append("Platform name was empty. Field cleared.")
-                            ai_result["platform"] = None
-
-                        st.session_state.ai_suggestion = ai_result
-                        st.session_state.ai_warnings = val_warnings
-                        if val_warnings:
-                            st.warning("⚠️ Field Validation Warnings:\n" + "\n".join(f"- {w}" for w in val_warnings))
-                        st.success("Screenshot transcribed successfully! Pre-filled fields below for your review.")
-                    else:
-                        st.warning(friendly_err or "Gemini is slow right now. Please try again, or enter the details manually.")
-                        if tech_err:
-                            with st.expander("Technical details", expanded=False):
-                                st.code(tech_err)
-
-    st.markdown("---")
-    st.markdown("### Order Incident Details (Review & Edit)")
-    if st.session_state.get("ai_warnings"):
-        for w in st.session_state.ai_warnings:
-            st.caption(f"⚠️ {w}")
-
-    sug = st.session_state.ai_suggestion or {}
-    default_date = sug.get("order_date") or ""
-    default_platform = sug.get("platform") or "Swiggy"
-    default_store = sug.get("restaurant_or_store") or ""
-    default_order_id = sug.get("order_id") or ""
-    default_amount = sug.get("amount_inr") if sug.get("amount_inr") is not None else 0.0
-    default_issue = sug.get("issue_type") or "Late delivery"
-    default_text = sug.get("extracted_text") or ""
-
-    platform_options = ["Swiggy", "Zomato", "Blinkit", "Zepto", "Amazon", "BigBasket", "Instamart", "Other"]
-    plat_idx = platform_options.index(default_platform) if default_platform in platform_options else 0
-
-    issue_options = db.VALID_ISSUE_TYPES
-    issue_idx = issue_options.index(default_issue) if default_issue in issue_options else 0
-
-    refund_options = db.VALID_REFUND_STATUSES
-
-    with st.form("add_order_incident_form", clear_on_submit=False):
-        c1, c2 = st.columns([1, 1])
-
-        with c1:
-            case_input = st.text_input("Case Name:", value=st.session_state.current_case)
-            date_input = st.text_input("Order Date (YYYY-MM-DD or leave blank if unknown):", value=default_date)
-            platform_input = st.selectbox("Platform:", options=platform_options, index=plat_idx)
-            store_input = st.text_input("Restaurant or Store:", value=default_store, placeholder="e.g. Spice Bowl Kitchen")
-            order_id_input = st.text_input("Order ID (Optional):", value=default_order_id, placeholder="e.g. SW-9021")
-            issue_type_input = st.selectbox("Issue Type:", options=issue_options, index=issue_idx)
-            amount_input = st.number_input("Amount (INR):", min_value=0.0, value=float(default_amount), step=10.0)
-
-        with c2:
-            time_c1, time_c2 = st.columns(2)
-            with time_c1:
-                promised_min_input = st.number_input("Promised Minutes (Optional):", min_value=0, value=0, step=5)
-            with time_c2:
-                actual_min_input = st.number_input("Actual Arrival Minutes (Optional):", min_value=0, value=0, step=5)
-
-            refund_status_input = st.selectbox("Refund Status:", options=refund_options, index=0)
-            link_group_input = st.text_input("Link Group (Optional):", value="", placeholder="e.g. Spice Bowl Kitchen Order Chain")
-            extracted_text_input = st.text_area("Extracted Visible Text:", value=default_text, height=95)
-            notes_input = st.text_area("Neutral Notes & Context:", value="Order marked delivered; support interaction recorded.", height=65)
-
-        submit_save = st.form_submit_button("💾 Save Order Incident", width="stretch")
-
-        if submit_save:
-            amt_to_save = float(amount_input) if amount_input > 0 else None
-            prom_to_save = int(promised_min_input) if promised_min_input > 0 else None
-            act_to_save = int(actual_min_input) if actual_min_input > 0 else None
-
-            new_id = db.add_incident(
-                case_name=case_input.strip() or st.session_state.current_case,
-                order_date=date_input.strip() if date_input.strip() else None,
-                platform=platform_input,
-                restaurant_or_store=store_input.strip() or "Store Not Specified",
-                order_id=order_id_input.strip() if order_id_input.strip() else None,
-                issue_type=issue_type_input,
-                amount_inr=amt_to_save,
-                promised_minutes=prom_to_save,
-                actual_minutes=act_to_save,
-                refund_status=refund_status_input,
-                extracted_text=extracted_text_input,
-                notes=notes_input,
-                image_path=st.session_state.uploaded_file_path or saved_path,
-                file_hash=st.session_state.uploaded_file_hash or current_hash,
-                link_group=link_group_input.strip() if link_group_input.strip() else None,
-            )
-            st.session_state.current_case = case_input.strip() or st.session_state.current_case
-            st.session_state.ai_suggestion = None
-            st.session_state.uploaded_file_path = ""
-            st.session_state.uploaded_file_hash = ""
-            st.success(f"Order Incident #{new_id} successfully saved to case '{st.session_state.current_case}'!")
-            st.rerun()
-
-
-# -------------------------------------------------------------
-# TAB 2: TIMELINE
-# -------------------------------------------------------------
-with tab_timeline:
-    st.subheader("Chronological Order Issue Timeline")
-
-    if not incidents:
-        st.info("No order incidents recorded in this case. Click 'Load Demo Case' in the sidebar or record an incident above.")
-    else:
-        # Filters: Link Group and Platform
-        available_groups = db.get_link_groups(case_name=st.session_state.current_case)
-        available_platforms = db.get_platforms(case_name=st.session_state.current_case)
-
-        f_col1, f_col2 = st.columns(2)
-        with f_col1:
-            selected_group_filter = st.selectbox(
-                "Filter by Link Group:",
-                options=["All Groups"] + available_groups,
-                index=0,
-            )
-        with f_col2:
-            selected_plat_filter = st.selectbox(
-                "Filter by Platform:",
-                options=["All Platforms"] + available_platforms,
-                index=0,
-            )
-
-        # Apply filtering
-        display_incidents = [
-            inc for inc in incidents
-            if (selected_group_filter == "All Groups" or inc.get("link_group") == selected_group_filter)
-            and (selected_plat_filter == "All Platforms" or inc.get("platform") == selected_plat_filter)
-        ]
-
-        # Separate dated vs undated
-        dated_incidents = [inc for inc in display_incidents if inc.get("order_date") and inc["order_date"].strip()]
-        undated_incidents = [inc for inc in display_incidents if not inc.get("order_date") or not inc["order_date"].strip()]
-
-        # Weekly Bar Chart
-        if dated_incidents:
-            st.markdown("#### Weekly Issue Frequency")
-            analysis_data = patterns.analyze_patterns(dated_incidents)
-            weekly_list = analysis_data["weekly"]["weeks"]
-
-            if weekly_list:
-                chart_df = pd.DataFrame([
-                    {"Week": w["label"], "Reported Issues": w["count"]}
-                    for w in weekly_list
-                ])
-                st.bar_chart(chart_df, x="Week", y="Reported Issues", color="#FF5C1F")
-
-        # Multi-select to assign link groups
-        with st.expander("🔗 Assign Selected Orders to a Link Group", expanded=False):
-            st.markdown("Group related orders (e.g. recurring issues from the same restaurant or grocery order chain).")
-            lg_c1, lg_c2, lg_c3 = st.columns([2, 2, 1])
-            with lg_c1:
-                selected_ids = st.multiselect(
-                    "Select Order Incident IDs:",
-                    options=[inc["id"] for inc in display_incidents],
-                    format_func=lambda i: f"Order #{i} • {next((x['restaurant_or_store'] for x in display_incidents if x['id'] == i), '')} ({next((x['order_date'] or 'No date' for x in display_incidents if x['id'] == i), '')})",
+            if target_bytes:
+                ai_receipt, tech_err = ai.read_receipt(
+                    target_bytes,
+                    api_key=detected_api_key,
+                    mock=is_demo_mode
                 )
-            with lg_c2:
-                target_link_group = st.text_input("Link Group Name:")
-            with lg_c3:
-                st.write("")
-                st.write("")
-                if st.button("Apply Link", width="stretch"):
-                    if selected_ids and target_link_group.strip():
-                        updated_count = db.update_link_groups_for_ids(selected_ids, target_link_group.strip())
-                        st.success(f"Assigned {updated_count} incidents to link group '{target_link_group.strip()}'.")
-                        st.rerun()
-                    else:
-                        st.warning("Please choose incidents and specify a group name.")
-
-        # Dated Orders Table
-        st.markdown(f"#### Logged Order Issues ({len(dated_incidents)} dated)")
-        if dated_incidents:
-            rows = []
-            for inc in dated_incidents:
-                amt_str = f"INR {inc.get('amount_inr'):.2f}" if inc.get("amount_inr") is not None else "-"
-                delay_str = f"{inc['actual_minutes'] - inc['promised_minutes']}m delay" if (inc.get("actual_minutes") and inc.get("promised_minutes") and inc["actual_minutes"] > inc["promised_minutes"]) else "-"
-                rows.append({
-                    "ID": inc["id"],
-                    "Order Date": inc["order_date"],
-                    "Platform": inc["platform"],
-                    "Store / Restaurant": inc["restaurant_or_store"],
-                    "Order ID": inc["order_id"] or "-",
-                    "Issue Type": inc["issue_type"],
-                    "Amount": amt_str,
-                    "Delay": delay_str,
-                    "Refund Status": inc["refund_status"],
-                    "Link Group": inc["link_group"] or "-",
-                    "Evidence File": os.path.basename(inc["image_path"]) if inc.get("image_path") else "-",
-                })
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        else:
-            st.info("No dated orders match the current filters.")
-
-        # Undated Orders Section ("Needs a date")
-        if undated_incidents:
-            st.markdown("#### ⚠️ Needs a Date")
-            st.caption("The following records do not have an order date and are kept separate from chronological timeline statistics:")
-            undated_rows = []
-            for inc in undated_incidents:
-                undated_rows.append({
-                    "ID": inc["id"],
-                    "Platform": inc["platform"],
-                    "Store / Restaurant": inc["restaurant_or_store"],
-                    "Order ID": inc["order_id"] or "-",
-                    "Issue Type": inc["issue_type"],
-                    "Refund Status": inc["refund_status"],
-                    "Link Group": inc["link_group"] or "-",
-                    "Extracted Text": inc["extracted_text"],
-                })
-            st.dataframe(pd.DataFrame(undated_rows), width="stretch", hide_index=True)
-
-        # Inspect, Edit, or Delete Single Incident
-        st.markdown("---")
-        st.markdown("#### ✏️ Inspect, Edit or Delete Incident Record")
-        incident_to_manage = st.selectbox(
-            "Select Incident to Manage:",
-            options=display_incidents,
-            format_func=lambda x: f"Incident #{x['id']} • {x['platform']} • {x['restaurant_or_store']} • {x['order_date'] or 'No Date'}",
-        )
-
-        if incident_to_manage:
-            with st.expander(f"Edit Incident #{incident_to_manage['id']}", expanded=False):
-                ed_c1, ed_c2 = st.columns(2)
-                with ed_c1:
-                    edit_date = st.text_input("Order Date (YYYY-MM-DD or blank):", value=incident_to_manage["order_date"] or "")
-                    edit_platform = st.text_input("Platform:", value=incident_to_manage["platform"] or "")
-                    edit_store = st.text_input("Store / Restaurant:", value=incident_to_manage["restaurant_or_store"] or "")
-                    edit_order_id = st.text_input("Order ID:", value=incident_to_manage["order_id"] or "")
-                    edit_issue = st.selectbox("Issue Type:", options=db.VALID_ISSUE_TYPES, index=db.VALID_ISSUE_TYPES.index(incident_to_manage["issue_type"]) if incident_to_manage["issue_type"] in db.VALID_ISSUE_TYPES else 0)
-                    edit_amount = st.number_input("Amount (INR):", min_value=0.0, value=float(incident_to_manage["amount_inr"] or 0.0), step=10.0)
-                with ed_c2:
-                    edit_prom = st.number_input("Promised Minutes:", min_value=0, value=int(incident_to_manage["promised_minutes"] or 0))
-                    edit_act = st.number_input("Actual Arrival Minutes:", min_value=0, value=int(incident_to_manage["actual_minutes"] or 0))
-                    edit_refund = st.selectbox("Refund Status:", options=db.VALID_REFUND_STATUSES, index=db.VALID_REFUND_STATUSES.index(incident_to_manage["refund_status"]) if incident_to_manage["refund_status"] in db.VALID_REFUND_STATUSES else 0)
-                    edit_link = st.text_input("Link Group:", value=incident_to_manage["link_group"] or "")
-                    edit_text = st.text_area("Extracted Text:", value=incident_to_manage["extracted_text"] or "", height=80)
-                    edit_notes = st.text_area("Context / Notes:", value=incident_to_manage["notes"] or "", height=60)
-
-                if incident_to_manage.get("image_path") and os.path.exists(incident_to_manage["image_path"]):
-                    st.image(incident_to_manage["image_path"], caption=f"Evidence: {os.path.basename(incident_to_manage['image_path'])}", width=360)
-
-                st.caption(f"SHA-256 Checksum: `{incident_to_manage.get('file_hash') or 'N/A'}`")
-
-                btn_c1, btn_c2 = st.columns(2)
-                with btn_c1:
-                    if st.button("💾 Save Changes", key=f"save_{incident_to_manage['id']}", width="stretch"):
-                        db.update_incident(
-                            incident_id=incident_to_manage["id"],
-                            case_name=st.session_state.current_case,
-                            order_date=edit_date.strip() if edit_date.strip() else None,
-                            platform=edit_platform.strip(),
-                            restaurant_or_store=edit_store.strip(),
-                            order_id=edit_order_id.strip() if edit_order_id.strip() else None,
-                            issue_type=edit_issue,
-                            amount_inr=float(edit_amount) if edit_amount > 0 else None,
-                            promised_minutes=int(edit_prom) if edit_prom > 0 else None,
-                            actual_minutes=int(edit_act) if edit_act > 0 else None,
-                            refund_status=edit_refund,
-                            extracted_text=edit_text,
-                            notes=edit_notes,
-                            image_path=incident_to_manage.get("image_path") or "",
-                            file_hash=incident_to_manage.get("file_hash") or "",
-                            link_group=edit_link.strip() if edit_link.strip() else None,
-                        )
-                        st.success("Incident record updated.")
-                        st.rerun()
-
-                with btn_c2:
-                    if st.button("🗑️ Delete This Record", key=f"del_{incident_to_manage['id']}", type="secondary", width="stretch"):
-                        db.delete_incident(incident_to_manage["id"])
-                        st.success(f"Incident #{incident_to_manage['id']} deleted.")
-                        st.rerun()
-
-
-# -------------------------------------------------------------
-# TAB 3: PATTERNS
-# -------------------------------------------------------------
-with tab_patterns:
-    st.subheader("Observable Technical Patterns & Metrics")
-    st.caption("All figures are computed using plain Python code. Every card explicitly lists the order incident IDs behind it.")
-
-    if not incidents:
-        st.info("No order incidents found in active case. Add incidents or load demo case to view observable patterns.")
-    else:
-        computed = patterns.analyze_patterns(incidents)
-
-        total_st = computed["total"]
-        weekly_st = computed["weekly"]
-        platforms_st = computed["platforms"]
-        issue_types_st = computed["issue_types"]
-        stores_st = computed["stores"]
-        delays_st = computed["delays"]
-        refunds_st = computed["refunds"]
-
-        # Row 1: Totals, Financial Impact, and Trend
-        r1_c1, r1_c2, r1_c3 = st.columns(3)
-
-        with r1_c1:
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-title">Total Issues & Date Range</div>
-                    <div class="metric-value">{total_st['count']} Orders</div>
-                    <span class="metric-trace">IDs: {", ".join(str(i) for i in total_st['incident_ids']) or 'None'}</span>
-                    <div class="metric-sub">
-                        {total_st['date_range_str']} ({total_st['span_days']} days)
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with r1_c2:
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-title">Total Amount Affected</div>
-                    <div class="metric-value">INR {total_st['total_amount_inr']:.2f}</div>
-                    <span class="metric-trace">Documented IDs: {", ".join(str(i) for i in total_st['amount_incident_ids']) or 'None'}</span>
-                    <div class="metric-sub">
-                        Missing amount count: {total_st['missing_amount_count']} (IDs: {", ".join(str(i) for i in total_st['missing_amount_ids']) or 'None'})
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with r1_c3:
-            trend_val = weekly_st["trend"].title()
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-title">Weekly Issue Trend</div>
-                    <div class="metric-value">{trend_val}</div>
-                    <span class="metric-trace">1st Half IDs: {", ".join(str(i) for i in weekly_st['first_half_ids']) or 'None'} | 2nd Half IDs: {", ".join(str(i) for i in weekly_st['second_half_ids']) or 'None'}</span>
-                    <div class="metric-sub">
-                        1st half avg: {weekly_st['first_half_avg']}/wk vs 2nd half: {weekly_st['second_half_avg']}/wk
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        # Row 2: Repeat Store, Delays, and Refund Dispute Summary
-        r2_c1, r2_c2, r2_c3 = st.columns(3)
-
-        with r2_c1:
-            repeat_store_count = stores_st["repeat_store_count"]
-            repeat_names = ", ".join(f"{s} ({d['count']})" for s, d in stores_st["repeat_stores"].items()) or "None"
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-title">Repeat Stores (2+ Issues)</div>
-                    <div class="metric-value">{repeat_store_count} Store(s)</div>
-                    <span class="metric-trace">Repeat IDs: {", ".join(str(i) for i in stores_st['repeat_store_ids']) or 'None'}</span>
-                    <div class="metric-sub">{repeat_names}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with r2_c2:
-            if delays_st["has_delays"]:
-                delay_val = f"Avg {delays_st['average_delay_minutes']}m / Max {delays_st['max_delay_minutes']}m"
-                delay_trace = f"Delay IDs: {', '.join(str(i) for i in delays_st['incident_ids'])}"
-                delay_sub = f"{delays_st['delay_count']} delayed order(s) documented past promised delivery arrival time."
-            else:
-                delay_val = "0 Min"
-                delay_trace = "No delay records"
-                delay_sub = "No orders documented with actual arrival exceeding promised time."
-
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-title">Delivery Delays</div>
-                    <div class="metric-value">{delay_val}</div>
-                    <span class="metric-trace">{delay_trace}</span>
-                    <div class="metric-sub">{delay_sub}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with r2_c3:
-            rf_summary = f"Pending: {refunds_st['pending_count']} | Denied: {refunds_st['denied_count']} | Partial: {refunds_st['partial_count']}"
-            st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="metric-title">Refund Disputes & Status</div>
-                    <div class="metric-value">{refunds_st['pending_count']} Pending</div>
-                    <span class="metric-trace">Pending IDs: {", ".join(str(i) for i in refunds_st['pending_ids']) or 'None'}</span>
-                    <div class="metric-sub">
-                        {rf_summary}<br>
-                        Longest pending age: {refunds_st['longest_pending_days']} day(s) (IDs: {', '.join(str(i) for i in refunds_st['longest_pending_ids']) or 'None'})
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        # Row 3: Issues by Platform & by Issue Type
-        st.markdown("#### Distribution Across Platforms")
-        plat_cols = st.columns(max(1, len(platforms_st)))
-        for idx, (plat_name, plat_data) in enumerate(platforms_st.items()):
-            with plat_cols[idx % len(plat_cols)]:
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-title">{plat_name}</div>
-                        <div class="metric-value">{plat_data['count']}</div>
-                        <span class="metric-trace">IDs: {", ".join(str(i) for i in plat_data['incident_ids'])}</span>
-                        <div class="metric-sub">Total: INR {plat_data['amount_inr']:.2f}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-        st.markdown("#### Distribution Across Issue Types")
-        type_cols = st.columns(min(4, max(1, len(issue_types_st))))
-        for idx, (type_name, type_data) in enumerate(issue_types_st.items()):
-            with type_cols[idx % len(type_cols)]:
-                st.markdown(
-                    f"""
-                    <div class="metric-card">
-                        <div class="metric-title">{type_name}</div>
-                        <div class="metric-value">{type_data['count']}</div>
-                        <span class="metric-trace">IDs: {", ".join(str(i) for i in type_data['incident_ids'])}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-        if total_st["undated_count"] > 0:
-            st.info(
-                f"ℹ️ {total_st['undated_count']} incident(s) [IDs: {', '.join(str(i) for i in total_st['undated_incident_ids'])}] "
-                "lack confirmed order dates and are excluded from weekly trend computations."
-            )
-
-
-# -------------------------------------------------------------
-# TAB 4: REPORT
-# -------------------------------------------------------------
-with tab_report:
-    st.subheader("Generate & Export Structured Complaint Evidence Report")
-    st.caption("Creates an objective PDF compilation with template text, computed numbers, and full ID traceability.")
-
-    if not incidents:
-        st.warning("No incidents available to include in the report. Please add incidents or load the demo case first.")
-    else:
-        st.markdown(
-            f"""
-            <div style="background-color: #1A1F2C; border: 1px solid #2D3748; padding: 18px 20px; border-radius: 8px; margin-bottom: 20px;">
-                <h4 style="margin-top: 0; color: #FF5C1F;">Report Scope</h4>
-                <p style="color: #CBD5E1; margin-bottom: 6px;">
-                    <strong>Case / Subject:</strong> {st.session_state.current_case}<br>
-                    <strong>Total Order Incidents:</strong> {len(incidents)}<br>
-                    <strong>Integrity Verification:</strong> Cryptographic SHA-256 hashes generated for every evidence file.
-                </p>
-                <div style="font-size: 0.85rem; color: #94A3B8;">
-                    {DISCLAIMER_TEXT}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Optional verified complaint draft checkbox
-        has_verified_draft = bool(st.session_state.get("last_verified_draft"))
-        include_draft = st.checkbox(
-            "Include the verified complaint draft in PDF report",
-            value=has_verified_draft,
-            disabled=not has_verified_draft,
-            help="Appends the verified draft message from the AI Assistant tab to the exported report." if has_verified_draft else "Generate a verified complaint draft in the AI Assistant tab first.",
-        )
-
-        col_rep1, col_rep2 = st.columns(2)
-
-        with col_rep1:
-            if st.button("📄 Generate PDF Report", width="stretch", type="primary"):
-                with st.spinner("Compiling traceable evidence report..."):
-                    pdf_bytes = report.generate_pdf_report(
-                        case_name=st.session_state.current_case,
-                        incidents=incidents,
-                        complaint_draft=st.session_state.get("last_verified_draft") if include_draft else None,
-                    )
-                    st.session_state.generated_pdf = pdf_bytes
-                    st.success("PDF Report generated successfully!")
-
-        with col_rep2:
-            if "generated_pdf" in st.session_state and st.session_state.generated_pdf:
-                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-                safe_case = "".join(c if c.isalnum() else "_" for c in st.session_state.current_case)
-                filename = f"PatternProof_Orders_{safe_case}_{timestamp_str}.pdf"
-
-                st.download_button(
-                    label="⬇️ Download Evidence Report (PDF)",
-                    data=st.session_state.generated_pdf,
-                    file_name=filename,
-                    mime="application/pdf",
-                    width="stretch",
-                )
-
-        # Quick preview table
-        st.markdown("---")
-        st.markdown("#### Evidence Index Preview")
-        preview_rows = []
-        for inc in incidents:
-            amt_str = f"INR {inc.get('amount_inr'):.2f}" if inc.get("amount_inr") is not None else "-"
-            preview_rows.append({
-                "Incident ID": inc["id"],
-                "Date": inc["order_date"] or "Needs Date",
-                "Platform": inc["platform"],
-                "Store / Restaurant": inc["restaurant_or_store"],
-                "Issue Type": inc["issue_type"],
-                "Amount": amt_str,
-                "Refund": inc["refund_status"],
-                "Link Group": inc["link_group"] or "-",
-                "Evidence File": os.path.basename(inc["image_path"]) if inc.get("image_path") else "-",
-                "SHA-256 Checksum": inc["file_hash"][:16] + "..." if inc.get("file_hash") else "N/A",
-            })
-        st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
-
-
-# -------------------------------------------------------------
-# TAB 5: AI ASSISTANT
-# -------------------------------------------------------------
-with tab_assistant:
-    st.subheader("AI Complaint & Evidence Assistant")
-    st.caption("Ask questions or generate draft communications based strictly on saved case data. Plain-Python verification checks all claims before display.")
-
-    if not incidents:
-        st.info("No order incidents recorded in this case. Please add incidents or load the demo case first.")
-    else:
-        if "assistant_task" not in st.session_state:
-            st.session_state.assistant_task = ""
-        if "assistant_result" not in st.session_state:
-            st.session_state.assistant_result = None
-
-        st.markdown("#### Quick Preset Tasks")
-        presets = [
-            "Draft a complaint message to platform support",
-            "Summarise this case in 5 lines",
-            "Which store or platform has the most issues?",
-            "What evidence is missing or weak?",
-        ]
-
-        p_col1, p_col2 = st.columns(2)
-        task_to_run = None
-
-        with p_col1:
-            if st.button("📝 Draft a complaint message to platform support", width="stretch"):
-                task_to_run = presets[0]
-            if st.button("📋 Summarise this case in 5 lines", width="stretch"):
-                task_to_run = presets[1]
-
-        with p_col2:
-            if st.button("🏪 Which store or platform has the most issues?", width="stretch"):
-                task_to_run = presets[2]
-            if st.button("🔍 What evidence is missing or weak?", width="stretch"):
-                task_to_run = presets[3]
-
-        st.markdown("---")
-        c_col1, c_col2 = st.columns([3, 1])
-        with c_col1:
-            custom_input = st.text_input(
-                "Or enter a custom task / inquiry:",
-                placeholder="e.g. List all orders with missing items and their refund status",
-                key="custom_task_input_field",
-            )
-        with c_col2:
-            st.write("")
-            st.write("")
-            if st.button("🚀 Run Task", width="stretch"):
-                if custom_input.strip():
-                    task_to_run = custom_input.strip()
+                if tech_err:
+                    st.warning("AI reading encountered an issue. You can enter or edit the fields manually below.")
+                    with st.expander("Technical Error Detail"):
+                        st.code(tech_err)
                 else:
-                    st.warning("Please enter a question or task.")
-
-        if task_to_run:
-            st.session_state.assistant_task = task_to_run
-            with st.spinner("Processing task and running plain-Python verification checks..."):
-                analysis_data = patterns.analyze_patterns(incidents)
-                res = ai_assistant.run_assistant_task(
-                    task=task_to_run,
-                    incidents=incidents,
-                    patterns_data=analysis_data,
-                )
-                st.session_state.assistant_result = res
-                if res.get("success") and "complaint" in task_to_run.lower() and res.get("answer"):
-                    st.session_state.last_verified_draft = res["answer"]
-
-        cur_res = st.session_state.assistant_result
-        if cur_res:
-            st.markdown("---")
-            st.markdown(f"### Result for: *\"{st.session_state.assistant_task}\"*")
-
-            if cur_res.get("success") and cur_res.get("answer"):
-                label_badge = "📋 Template Answer (No AI)" if cur_res.get("is_template") else "🤖 AI Generated (Verified)"
-                st.markdown(
-                    f"""
-                    <div style="background-color: #1A1F2C; border: 1px solid #FF5C1F; border-radius: 10px; padding: 20px 24px; margin-bottom: 20px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                            <span style="font-weight: 700; color: #FF5C1F; font-size: 1.05rem;">Verified Assistant Response</span>
-                            <span style="background: rgba(255, 92, 31, 0.15); color: #FF5C1F; font-size: 0.8rem; font-weight: 600; padding: 4px 10px; border-radius: 4px;">{label_badge}</span>
-                        </div>
-                        <div style="color: #F8FAFC; white-space: pre-wrap; font-size: 0.95rem; line-height: 1.6;">{cur_res['answer']}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                meta_c1, meta_c2 = st.columns(2)
-                with meta_c1:
-                    cited_str = ", ".join(f"#{i}" for i in cur_res.get("cited_ids", [])) or "None"
-                    st.caption(f"📌 **Cited Incident IDs**: `{cited_str}`")
-                with meta_c2:
-                    nums_str = ", ".join(str(n) for n in cur_res.get("numbers_used", [])) or "None"
-                    st.caption(f"🔢 **Verified Numbers Used**: `{nums_str}`")
-
-                if cur_res.get("needs_more_info"):
-                    st.info("ℹ️ **Information needed to strengthen case**: " + "; ".join(cur_res["needs_more_info"]))
-            else:
-                st.error("❌ **Could not verify this answer.** The response failed verification checks after retry and was blocked.")
-                if st.button("📋 Load Verified Template Answer Instead", width="stretch"):
-                    analysis_data = patterns.analyze_patterns(incidents)
-                    tmpl_res = ai_assistant.generate_template_answer(
-                        st.session_state.assistant_task, incidents, analysis_data
-                    )
-                    _, tmpl_checks = verifier.verify_response(
-                        raw_json_str=None,
-                        parsed_output=tmpl_res,
-                        incidents=incidents,
-                        patterns_data=analysis_data,
-                        task_prompt=st.session_state.assistant_task,
-                    )
-                    st.session_state.assistant_result = {
-                        "success": True,
-                        "is_template": True,
-                        "answer": tmpl_res["answer"],
-                        "cited_ids": tmpl_res["cited_ids"],
-                        "numbers_used": tmpl_res["numbers_used"],
-                        "needs_more_info": tmpl_res["needs_more_info"],
-                        "check_results": tmpl_checks,
-                        "error_message": "Loaded verified template answer.",
-                    }
-                    if "complaint" in st.session_state.assistant_task.lower():
-                        st.session_state.last_verified_draft = tmpl_res["answer"]
+                    if ai_receipt.get("store"):
+                        st.session_state["form_store"] = str(ai_receipt["store"])
+                    if ai_receipt.get("platform"):
+                        st.session_state["form_platform"] = str(ai_receipt["platform"])
+                    if ai_receipt.get("order_id"):
+                        st.session_state["form_order_id"] = str(ai_receipt["order_id"])
+                    if ai_receipt.get("order_date"):
+                        st.session_state["form_order_date"] = str(ai_receipt["order_date"])
+                    if ai_receipt.get("total_inr") is not None:
+                        st.session_state["form_total_inr"] = str(ai_receipt["total_inr"])
+                    if ai_receipt.get("items"):
+                        st.session_state["form_items"] = ai_receipt["items"]
+                    st.success("Receipt parsed successfully! Details pre-filled below.")
                     st.rerun()
 
-            # Verification Panel
-            st.markdown("#### 🔍 Verification Panel")
-            st.caption("Plain-Python verifier executes 6 deterministic checks before allowing output:")
-            for check in cur_res.get("check_results", []):
-                icon = "✅" if check["passed"] else "❌"
-                status_color = "#10B981" if check["passed"] else "#EF4444"
+    st.markdown("---")
+    st.markdown("#### 2. Verify & Edit Order Information")
+
+    col_meta1, col_meta2, col_meta3 = st.columns(3)
+    with col_meta1:
+        val_platform = st.text_input("Platform / App", value=st.session_state.get("form_platform", ""), placeholder="e.g. InstaMart, Zepto, Blinkit")
+    with col_meta2:
+        val_store = st.text_input("Store Name", value=st.session_state.get("form_store", ""), placeholder="e.g. Fresh Basket, SuperMart")
+    with col_meta3:
+        val_order_id = st.text_input("Order ID", value=st.session_state.get("form_order_id", ""), placeholder="e.g. ORD-8921-X")
+
+    col_meta4, col_meta5 = st.columns(2)
+    with col_meta4:
+        val_date_str = st.text_input(
+            "Order Date (YYYY-MM-DD)",
+            value=st.session_state.get("form_order_date", ""),
+            placeholder="YYYY-MM-DD"
+        )
+        # Validate order date: not in future
+        cleaned_date = val_date_str.strip()
+        if cleaned_date:
+            try:
+                parsed_dt = datetime.strptime(cleaned_date, "%Y-%m-%d").date()
+                if parsed_dt > date.today():
+                    st.warning("Order date cannot be in the future. Field cleared.")
+                    cleaned_date = ""
+            except ValueError:
+                st.warning("Please format date as YYYY-MM-DD.")
+                cleaned_date = ""
+
+    with col_meta5:
+        val_total_str = st.text_input(
+            "Total Amount (INR)",
+            value=st.session_state.get("form_total_inr", ""),
+            placeholder="e.g. 450.00"
+        )
+        # Validate total: must be positive numeric
+        cleaned_total = None
+        if val_total_str.strip():
+            try:
+                t_float = float(val_total_str.strip())
+                if t_float < 0:
+                    st.warning("Total amount cannot be negative.")
+                else:
+                    cleaned_total = t_float
+            except ValueError:
+                st.warning("Total must be a numeric value.")
+
+    # Items Table Editable via st.data_editor
+    st.markdown("##### Billed Line Items")
+    current_items = st.session_state.get("form_items", [])
+    if not current_items:
+        current_items = [{"name": "Sample Item", "quantity": 1, "price_inr": 100.0}]
+
+    items_df = pd.DataFrame(current_items)
+    for expected_col in ["name", "quantity", "price_inr"]:
+        if expected_col not in items_df.columns:
+            items_df[expected_col] = 1 if expected_col == "quantity" else 0.0
+
+    edited_items_df = st.data_editor(
+        items_df[["name", "quantity", "price_inr"]],
+        num_rows="dynamic",
+        width="stretch",
+        key="items_data_editor"
+    )
+
+    st.markdown("---")
+
+    # Optional Product Photo Upload & Analysis
+    st.markdown("#### 3. Optional: Initial Product Photo")
+    st.caption("If you have taken a photo of the affected item, upload it here to help tailor the checklist:")
+
+    uploaded_product = st.file_uploader(
+        "Upload initial product photo (optional)",
+        type=["png", "jpg", "jpeg"],
+        key="product_file_uploader"
+    )
+
+    prod_col1, prod_col2 = st.columns([1, 1])
+    product_bytes_to_process = None
+    if uploaded_product is not None:
+        product_bytes_to_process = uploaded_product.getvalue()
+        with prod_col1:
+            st.image(product_bytes_to_process, caption="Uploaded Product Photo", width="stretch")
+    elif current_order and current_order.get("product_photo_path") and os.path.isfile(current_order["product_photo_path"]):
+        with prod_col1:
+            st.image(current_order["product_photo_path"], caption="Current Product Photo in Order", width="stretch")
+
+    with prod_col2:
+        if st.button("🔍 Analyse Product Photo with AI", width="stretch", disabled=(product_bytes_to_process is None and not (current_order and current_order.get("product_photo_path")))):
+            p_bytes = product_bytes_to_process
+            if not p_bytes and current_order and current_order.get("product_photo_path"):
+                with open(current_order["product_photo_path"], "rb") as pf:
+                    p_bytes = pf.read()
+
+            if p_bytes:
+                items_dict_list = edited_items_df.to_dict(orient="records")
+                analysis_data, tech_err = ai.analyse_product_photo(
+                    p_bytes,
+                    receipt_items=items_dict_list,
+                    api_key=detected_api_key,
+                    mock=is_demo_mode
+                )
+                if tech_err:
+                    st.warning("Could not complete product analysis. You may continue without it.")
+                    with st.expander("Technical Error Detail"):
+                        st.code(tech_err)
+                else:
+                    st.session_state["form_analysis"] = analysis_data
+                    st.success("Product photo analyzed!")
+                    st.rerun()
+
+    # Display editable product analysis summary
+    current_analysis = st.session_state.get("form_analysis", {})
+    analysis_desc = current_analysis.get("product_description", "")
+    edited_summary = st.text_area(
+        "AI Observation Summary (Editable)",
+        value=analysis_desc,
+        placeholder="Factual notes on visible product state...",
+        help="Summarizes what is visible in the initial product photo."
+    )
+
+    st.markdown("---")
+
+    # Claim Type Selection & Checklist Generation Button
+    st.markdown("#### 4. Delivery Issue & Checklist Generation")
+    claim_type_idx = 0
+    if st.session_state.get("form_claim_type") in tasks.CLAIM_TYPES:
+        claim_type_idx = tasks.CLAIM_TYPES.index(st.session_state["form_claim_type"])
+
+    selected_claim_type = st.selectbox(
+        "What issue occurred with this order?",
+        options=tasks.CLAIM_TYPES,
+        index=claim_type_idx
+    )
+
+    if st.button("📋 Create My Photo Checklist", type="primary", width="stretch"):
+        # Save or update order in DB
+        items_dict_list = edited_items_df.to_dict(orient="records")
+
+        # Handle receipt file saving
+        saved_receipt_path = current_order.get("receipt_path") if current_order else None
+        saved_receipt_hash = current_order.get("receipt_hash") if current_order else None
+        if uploaded_receipt is not None:
+            r_bytes = uploaded_receipt.getvalue()
+            os.makedirs("uploads", exist_ok=True)
+            saved_receipt_hash = hashlib.sha256(r_bytes).hexdigest()
+            saved_receipt_path = os.path.join("uploads", f"receipt_{saved_receipt_hash[:12]}.jpg")
+            with open(saved_receipt_path, "wb") as f:
+                f.write(r_bytes)
+
+        # Handle product photo saving
+        saved_product_path = current_order.get("product_photo_path") if current_order else None
+        saved_product_hash = current_order.get("product_hash") if current_order else None
+        if uploaded_product is not None:
+            p_bytes = uploaded_product.getvalue()
+            os.makedirs("uploads", exist_ok=True)
+            saved_product_hash = hashlib.sha256(p_bytes).hexdigest()
+            saved_product_path = os.path.join("uploads", f"product_{saved_product_hash[:12]}.jpg")
+            with open(saved_product_path, "wb") as f:
+                f.write(p_bytes)
+
+        updated_analysis = dict(current_analysis)
+        if edited_summary:
+            updated_analysis["product_description"] = edited_summary
+
+        order_record = {
+            "id": current_order["id"] if current_order else None,
+            "store": val_store.strip() or "Delivery Store",
+            "platform": val_platform.strip() or "Delivery Platform",
+            "order_id": val_order_id.strip() or f"ORD-{int(datetime.now().timestamp())}",
+            "order_date": cleaned_date or datetime.now().strftime("%Y-%m-%d"),
+            "total_inr": cleaned_total,
+            "items": items_dict_list,
+            "claim_type": selected_claim_type,
+            "receipt_path": saved_receipt_path,
+            "receipt_hash": saved_receipt_hash,
+            "product_photo_path": saved_product_path,
+            "product_hash": saved_product_hash,
+            "product_analysis": updated_analysis
+        }
+
+        saved_oid = db.save_order(order_record)
+        st.session_state["current_order_id"] = saved_oid
+
+        # Generate custom photographic checklist
+        with st.spinner("Generating custom photographic evidence tasks..."):
+            ai_tasks_resp, tech_err = ai.generate_tasks(
+                order_record,
+                updated_analysis,
+                selected_claim_type,
+                api_key=detected_api_key,
+                mock=is_demo_mode
+            )
+            raw_tasks = ai_tasks_resp.get("tasks", []) if isinstance(ai_tasks_resp, dict) else []
+            validated_tasks = tasks.validate_ai_tasks(raw_tasks, selected_claim_type, order_record)
+            db.save_tasks(saved_oid, validated_tasks)
+
+        st.success("Photo checklist generated! Switched to Step 2.")
+        st.session_state["active_tab_index"] = 1
+        st.rerun()
+
+
+# =========================================================================
+# TAB 2: PHOTO CHECKLIST TASKS
+# =========================================================================
+with tab_tasks:
+    st.markdown("### Step 2: Custom Photo Checklist")
+
+    if not current_order:
+        st.warning("No active order found. Please complete Step 1 or load a demo order from the sidebar.")
+    else:
+        order_tasks = db.get_tasks_for_order(current_order["id"])
+        if not order_tasks:
+            st.info("Checklist has not been created yet for this order. Click 'Create My Photo Checklist' in Step 1.")
+        else:
+            # Metrics & Progress bar
+            total_count = len(order_tasks)
+            passed_count = sum(1 for t in order_tasks if t.get("status") == "Passed")
+            confirmed_count = sum(1 for t in order_tasks if t.get("status") == "User-confirmed")
+            partial_count = sum(1 for t in order_tasks if t.get("status") == "Partial")
+            retake_count = sum(1 for t in order_tasks if t.get("status") == "Retake")
+            open_count = sum(1 for t in order_tasks if t.get("status") == "Open")
+
+            progress_val = (passed_count + confirmed_count) / total_count if total_count > 0 else 0.0
+            st.progress(progress_val)
+
+            # Metric Counters
+            mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+            mc1.metric("Passed", f"{passed_count}/{total_count}")
+            mc2.metric("User-Confirmed", f"{confirmed_count}")
+            mc3.metric("Partial", f"{partial_count}")
+            mc4.metric("Retake Suggested", f"{retake_count}")
+            mc5.metric("Awaiting Photos", f"{open_count}")
+
+            st.markdown("---")
+
+            # Collect existing hashes for duplicate checking
+            existing_order_hashes = db.get_order_hashes(current_order["id"])
+
+            # Render Each Task Card
+            for t in order_tasks:
+                task_id = t["id"]
+                task_code = t.get("task_code", "T")
+                title = t.get("title", "Evidence Photo")
+                status = t.get("status", "Open")
+                attempts = t.get("attempts", 0)
+
+                # Status Badge Markup
+                if status == "Passed":
+                    badge_class = "badge-passed"
+                    status_symbol = "✓"
+                elif status == "User-confirmed":
+                    badge_class = "badge-confirmed"
+                    status_symbol = "★"
+                elif status == "Partial":
+                    badge_class = "badge-partial"
+                    status_symbol = "!"
+                elif status == "Retake":
+                    badge_class = "badge-retake"
+                    status_symbol = "✗"
+                else:
+                    badge_class = "badge-open"
+                    status_symbol = "○"
+
                 st.markdown(
-                    f"""
-                    <div style="background: #151A24; border-left: 4px solid {status_color}; padding: 10px 14px; margin-bottom: 8px; border-radius: 4px;">
-                        <span style="font-weight: 600; color: #E2E8F0;">{icon} {check['check_name']}</span>: 
-                        <span style="color: #94A3B8; font-size: 0.9rem;">{check['detail']}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                    f'<div class="evidence-card">'
+                    f'<div style="display: flex; justify-content: space-between; align-items: center;">'
+                    f'<h4 style="margin: 0; color: #FFFFFF;">{task_code}: {title}</h4>'
+                    f'<span class="status-badge {badge_class}">{status_symbol} {status}</span>'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
                 )
 
+                card_col1, card_col2 = st.columns([1, 1])
 
-# -------------------------------------------------------------
-# APP FOOTER (MANDATORY ON EVERY PAGE)
-# -------------------------------------------------------------
+                with card_col1:
+                    st.markdown(f"**Required Angle**: `{t.get('angle', 'Standard angle')}`")
+                    st.markdown(
+                        f'<div class="instruction-callout">'
+                        f'<strong>Concrete Instruction:</strong><br/>{t.get("instruction", "")}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                    st.markdown("**What must be clearly visible:**")
+                    for req in t.get("must_show", []):
+                        st.markdown(f"- {req}")
+
+                    if t.get("related_item"):
+                        st.caption(f"Tied to item: {t['related_item']}")
+
+                with card_col2:
+                    # Tabs for camera input vs file upload
+                    input_tab_upload, input_tab_camera = st.tabs(["📁 Upload File", "📷 Live Camera"])
+
+                    new_photo_bytes = None
+                    is_camera = False
+                    input_filename = ""
+
+                    with input_tab_upload:
+                        uploaded_file = st.file_uploader(
+                            f"Upload photo for {task_code}",
+                            type=["jpg", "jpeg", "png"],
+                            key=f"file_uploader_{task_id}"
+                        )
+                        if uploaded_file is not None:
+                            new_photo_bytes = uploaded_file.getvalue()
+                            input_filename = uploaded_file.name
+
+                    with input_tab_camera:
+                        cam_photo = st.camera_input(
+                            f"Take photo for {task_code}",
+                            key=f"camera_{task_id}"
+                        )
+                        if cam_photo is not None:
+                            new_photo_bytes = cam_photo.getvalue()
+                            is_camera = True
+                            input_filename = "camera_capture.jpg"
+
+                    # Quick Demo Mode test shortcuts to simulate good/bad images effortlessly
+                    if is_demo_mode:
+                        test_btn_col1, test_btn_col2 = st.columns(2)
+                        with test_btn_col1:
+                            if st.button(f"⚡ Use Good Test Photo", key=f"btn_demo_good_{task_id}", width="stretch"):
+                                input_filename, new_photo_bytes = demo.create_demo_task_image("good", t.get("title", "Task"))
+                        with test_btn_col2:
+                            if st.button(f"⚡ Use Retake Test Photo", key=f"btn_demo_bad_{task_id}", width="stretch"):
+                                input_filename, new_photo_bytes = demo.create_demo_task_image("bad", t.get("title", "Task"))
+
+                    # Display existing or newly captured photo
+                    existing_photo = t.get("photo_path")
+                    if new_photo_bytes:
+                        st.image(new_photo_bytes, caption=f"Selected Photo ({input_filename})", width="stretch")
+                    elif existing_photo and os.path.isfile(existing_photo):
+                        st.image(existing_photo, caption=f"Current Photo: {t.get('captured_at', '')}", width="stretch")
+
+                    # Check photo button
+                    if st.button(f"🔍 Check this photo ({task_code})", key=f"btn_verify_{task_id}", width="stretch", disabled=(new_photo_bytes is None and not (existing_photo and os.path.isfile(existing_photo)))):
+                        bytes_to_verify = new_photo_bytes
+                        if not bytes_to_verify and existing_photo and os.path.isfile(existing_photo):
+                            with open(existing_photo, "rb") as ef:
+                                bytes_to_verify = ef.read()
+
+                        if bytes_to_verify:
+                            # 1. Save photo to disk
+                            os.makedirs("uploads", exist_ok=True)
+                            p_hash = hashlib.sha256(bytes_to_verify).hexdigest()
+                            target_save_path = os.path.join("uploads", f"task_{task_code}_{p_hash[:10]}.jpg")
+                            with open(target_save_path, "wb") as pf:
+                                pf.write(bytes_to_verify)
+
+                            # 2. Gather hashes & existing task aHashes for similarity checks
+                            exclude_set = existing_order_hashes.copy()
+                            # Allow re-uploading the same file to the same task without self-duplicate trigger
+                            if t.get("photo_hash") in exclude_set:
+                                exclude_set.remove(t["photo_hash"])
+
+                            other_ahashes = []
+                            for ot in order_tasks:
+                                if ot["id"] != task_id and ot.get("photo_path") and os.path.isfile(ot["photo_path"]):
+                                    try:
+                                        o_img = Image.open(ot["photo_path"])
+                                        other_ahashes.append((ot.get("task_code", "other"), verifier.compute_ahash(o_img)))
+                                    except Exception:
+                                        pass
+
+                            # 3. Call AI Observation
+                            fn_for_mock = input_filename or os.path.basename(target_save_path)
+                            ai_obs, tech_err = ai.verify_photo(
+                                bytes_to_verify,
+                                t,
+                                current_order,
+                                api_key=detected_api_key,
+                                mock=is_demo_mode,
+                                filename=fn_for_mock
+                            )
+
+                            # 4. Run plain Python verification
+                            eval_res = verifier.verify_task_photo(
+                                bytes_to_verify,
+                                t,
+                                current_order,
+                                ai_result=ai_obs,
+                                existing_hashes=exclude_set,
+                                other_task_ahashes=other_ahashes,
+                                is_camera_input=is_camera
+                            )
+
+                            # 5. Update DB
+                            new_attempts = attempts + 1
+                            db.update_task(task_id, {
+                                "status": eval_res["status"],
+                                "attempts": new_attempts,
+                                "photo_path": target_save_path,
+                                "photo_hash": eval_res["photo_hash"],
+                                "captured_at": eval_res["captured_at"],
+                                "verification": eval_res
+                            })
+
+                            st.success(f"Task evaluation complete: {eval_res['status']}")
+                            st.rerun()
+
+                # Verification Result Details Panel
+                verif_json = t.get("verification")
+                if verif_json and isinstance(verif_json, dict):
+                    with st.expander(f"📊 Verification Details for {task_code} (Status: {status})", expanded=(status in ["Retake", "Partial"])):
+                        st.markdown(f"**Evaluated At**: {verif_json.get('captured_at', '')} | **Attempts**: {attempts}")
+                        st.markdown(f"**Original SHA-256**: `{t.get('photo_hash', 'N/A')}`")
+
+                        # Display Check Rows
+                        for chk in verif_json.get("checks", []):
+                            c_status = chk.get("status", "pass")
+                            c_name = chk.get("name", "Check")
+                            c_detail = chk.get("detail", "")
+
+                            if c_status == "pass":
+                                icon = "✅"
+                            elif c_status == "warn":
+                                icon = "⚠️"
+                            else:
+                                icon = "❌"
+
+                            st.markdown(f"{icon} **{c_name}**: {c_detail}")
+
+                        # Actionable Retake Advice Box
+                        advice_list = verif_json.get("retake_advice", [])
+                        if advice_list:
+                            advice_items_html = "".join([f"<li>{adv}</li>" for adv in advice_list])
+                            st.markdown(
+                                f'<div class="retake-box">'
+                                f'<strong style="color: #E74C3C;">Retake Advice:</strong>'
+                                f'<ul style="margin: 0.3rem 0 0 1.2rem; color: #E0E6ED;">{advice_items_html}</ul>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+
+                # Option to Mark as User-Confirmed after 3 attempts or if AI unavailable
+                ai_failed = verif_json and any("AI check unavailable" in chk.get("detail", "") for chk in verif_json.get("checks", []))
+                if attempts >= 3 or ai_failed:
+                    if status != "User-confirmed":
+                        st.markdown("")
+                        if st.button(
+                            f"✋ Mark {task_code} as user-confirmed (not machine-verified)",
+                            key=f"btn_confirm_{task_id}",
+                            help="After multiple attempts or when AI visual analysis is unavailable, you can manually certify this photo."
+                        ):
+                            db.update_task(task_id, {"status": "User-confirmed"})
+                            st.info(f"{task_code} marked as user-confirmed.")
+                            st.rerun()
+
+                st.markdown("---")
+
+            # Bottom advance button to Evidence Pack
+            if st.button("Proceed to Evidence Pack Export ➔", width="stretch"):
+                st.session_state["active_tab_index"] = 2
+                st.rerun()
+
+
+# =========================================================================
+# TAB 3: EVIDENCE PACK EXPORT
+# =========================================================================
+with tab_pack:
+    st.markdown("### Step 3: Evidence Pack Summary & Export")
+
+    if not current_order:
+        st.warning("No active order found. Please complete Step 1 or load a demo order.")
+    else:
+        order_tasks = db.get_tasks_for_order(current_order["id"])
+
+        total_tasks = len(order_tasks)
+        passed_count = sum(1 for t in order_tasks if t.get("status") == "Passed")
+        confirmed_count = sum(1 for t in order_tasks if t.get("status") == "User-confirmed")
+        partial_count = sum(1 for t in order_tasks if t.get("status") == "Partial")
+        retake_count = sum(1 for t in order_tasks if t.get("status") == "Retake")
+        open_count = sum(1 for t in order_tasks if t.get("status") == "Open")
+
+        ready_count = passed_count + confirmed_count
+        readiness_pct = int(round((ready_count / total_tasks * 100))) if total_tasks > 0 else 0
+
+        # Readiness Metric Card
+        r_col1, r_col2 = st.columns([1, 2])
+        with r_col1:
+            st.metric("Evidence Readiness", f"{readiness_pct}%")
+            if readiness_pct == 100:
+                st.success("All evidence checklist tasks completed!")
+            elif readiness_pct >= 50:
+                st.info("Evidence is partially compiled.")
+            else:
+                st.warning("More evidence photos are recommended before sharing with support.")
+
+        with r_col2:
+            st.markdown(
+                f"""
+                **Evidence Task Status Breakdown:**
+                - Machine-Verified Passed: **{passed_count}**
+                - User-Confirmed: **{confirmed_count}**
+                - Partial (minor warnings): **{partial_count}**
+                - Retake Suggested: **{retake_count}**
+                - Awaiting Upload: **{open_count}**
+                """
+            )
+
+        st.markdown("---")
+        st.markdown("#### Evidence Items Summary")
+
+        summary_rows = []
+        for t in order_tasks:
+            summary_rows.append({
+                "Task": t.get("task_code"),
+                "Shot Type": t.get("shot_type"),
+                "Title": t.get("title"),
+                "Status": t.get("status"),
+                "Attempts": t.get("attempts", 0),
+                "SHA-256 Hash": (t.get("photo_hash")[:16] + "...") if t.get("photo_hash") else "None",
+            })
+
+        st.dataframe(pd.DataFrame(summary_rows), width="stretch")
+
+        st.caption("Note: 'User-confirmed' items are recorded as self-attested by the user and not machine-verified.")
+
+        st.markdown("---")
+        st.markdown("#### Generate PDF Evidence Pack")
+
+        pdf_path = f"uploads/evidence_pack_{current_order['id']}.pdf"
+
+        if st.button("📄 Generate Evidence PDF", type="primary", width="stretch"):
+            with st.spinner("Compiling structured evidence pack PDF..."):
+                gen_path = report.generate_evidence_pdf(current_order, order_tasks, pdf_path)
+                st.session_state["pdf_ready_path"] = gen_path
+                st.success("Evidence PDF compiled successfully!")
+
+        if st.session_state.get("pdf_ready_path") and os.path.isfile(st.session_state["pdf_ready_path"]):
+            with open(st.session_state["pdf_ready_path"], "rb") as pf:
+                pdf_bytes = pf.read()
+
+            st.download_button(
+                label="📥 Download Evidence Pack PDF",
+                data=pdf_bytes,
+                file_name=f"PatternProof_Evidence_{current_order.get('order_id', 'pack')}.pdf",
+                mime="application/pdf",
+                width="stretch"
+            )
+
+        st.markdown("---")
+        st.info("💡 **Next Step**: You may wish to share this PDF evidence pack with the delivery platform's customer support team.")
+
+
+# =========================================================================
+# FOOTER ON EVERY VIEW
+# =========================================================================
 st.markdown(
-    f"""
-    <div class="app-footer">
-        📦 <strong>PatternProof</strong> &bull; {DISCLAIMER_TEXT}
-    </div>
-    """,
-    unsafe_allow_html=True,
+    f'<div class="footer-disclaimer">{FOOTER_DISCLAIMER}</div>',
+    unsafe_allow_html=True
 )

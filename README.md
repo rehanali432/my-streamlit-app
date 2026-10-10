@@ -1,18 +1,25 @@
-# PatternProof 📦
-*Delivery Order Evidence Organizer & Traceable Pattern Analyzer*
+# PatternProof: Delivery Evidence Coach 📦
 
-PatternProof helps users compile, link, and export structured evidence for food and grocery delivery order issues (Swiggy, Zomato, Blinkit, Zepto, Amazon, etc.). Problems like late deliveries, missing items, damaged goods, and unresolved refund requests often appear isolated on their own, leaving consumers with little documentation when contacting customer support or filing grievances. PatternProof lets a user upload order evidence, add basic details, link related orders, analyze timelines and observable patterns, and export a structured complaint evidence report.
+*A guided photographic evidence assistant for consumer delivery orders.*
+
+When a customer experiences a delivery problem (damaged packaging, spoiled or expired goods, wrong items, missing products, or short quantities), food and grocery delivery platforms routinely request clear photographic proof from specific angles. Customers often take rushed or unclear photos that support agents cannot verify.
+
+**PatternProof** acts as a coach:
+1. The user uploads their order receipt and (optionally) an initial product photo.
+2. The AI reads both and generates a custom 4-to-6 step photo checklist with exact angles, lighting, and required elements tailored to the actual billed items.
+3. The user captures or uploads photos for each checklist task.
+4. Plain Python code evaluates resolution (min 600 px), sharpness/blur (edge variance), lighting, duplicate files, EXIF capture dates, and AI visual observations to decide whether each shot passes or needs a retake with actionable coaching.
+5. The user exports a structured, audit-ready Evidence Pack PDF with original file SHA-256 hashes, thumbnails, and verification logs.
 
 ---
 
 ## ⚖️ Core Principles & Hard Rules
-1. **Never Blame or Identify Individuals**: Never blames or identifies any delivery partner, restaurant staff, or support agent. Never states who is at fault, never determines guilt, and never makes legal claims.
-2. **Strictly Neutral Terminology**: Uses terms like "reported issue", "order marked delivered", "refund status shown in screenshot". Never uses words like "scam", "fraud", "cheated", or "guilty".
-3. **Complete Metric Traceability**: Every statistic displays the exact order / incident IDs behind it.
-4. **Deterministic Plain Python**: All metrics, counts, store frequency, delays, and weekly trends are computed by plain Python code (no AI calculations).
-5. **Human-in-the-Loop AI**: AI is used strictly to transcribe visible receipt or chat screenshot text and suggest initial values. The user reviews and edits all fields before saving.
-6. **Mandatory Disclaimer**: Displayed in the app footer and on every PDF page:
-   > *"PatternProof organises user-provided evidence. It does not verify authenticity, assign blame, or provide legal advice."*
+1. **Plain Python Decisions**: The AI only observes and writes instructions. Plain Python makes every pass/fail decision.
+2. **Strictly Neutral & Objective**: Never states or implies a claim is valid, invalid, true, or false. Never assigns fault or names any person or delivery driver. No legal claims.
+3. **Objective Phrasing**: Zero usage of judgmental terms. Uses objective wording: "could not confirm", "not clearly visible", "retake suggested".
+4. **Mandatory Disclaimer**: Displayed in the app footer and on every PDF page:
+   > *"PatternProof organises user-provided evidence. It does not verify authenticity, decide claims, or provide legal advice."*
+5. **One-Time Privacy Tip**: Displays a privacy tip advising users to hide addresses and phone numbers before uploading receipts.
 
 ---
 
@@ -20,60 +27,85 @@ PatternProof helps users compile, link, and export structured evidence for food 
 
 ### 1. Requirements
 - Python 3.10+
-- Dependencies in `requirements.txt`
+- Packages in `requirements.txt`
 
 ### 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. (Optional) Configure Gemini API Key
-PatternProof runs 100% locally with full manual entry even without an API key. To enable automated screenshot transcription, add your key to `.env`:
-```ini
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-
-### 4. Run the Streamlit Application
+### 3. Run the Streamlit Application
 ```bash
 python -m streamlit run app.py
 ```
-Open your browser to `http://localhost:8501`.
+Open `http://localhost:8501` in your browser.
 
 ---
 
-## 🧪 Testing the Demo Case
-1. In the sidebar, click **"📥 Load Demo Case"**.
-2. 12 fictional orders across Swiggy, Zomato, and Blinkit will be loaded (spanning 6 weeks with repeat delayed orders from Spice Bowl Kitchen, 3 refund inquiries, and 2 link groups).
-3. Explore the **Add Incident**, **Timeline**, **Patterns**, **Report**, and **AI Assistant** tabs.
-4. In the **AI Assistant** tab, run preset or custom tasks to see verified answers alongside the 6-point verification panel.
-5. In the **Report** tab, optionally include the verified complaint draft in your exported PDF.
+## 🔑 How to Set GEMINI_API_KEY
+
+PatternProof works completely in **Demo Mode (simulated AI)** without requiring an API key. To enable live Google Gemini Flash vision, set your key using either of these methods:
+
+### Method A: Local Development (`.env` file)
+Create or edit a `.env` file in the project root:
+```ini
+GEMINI_API_KEY="your-google-gemini-api-key-here"
+```
+Do not quote with multiple quotation marks. Strip extra spaces.
+
+### Method B: Streamlit Cloud Secrets
+When deploying to Streamlit Cloud:
+1. Open your app dashboard on [share.streamlit.io](https://share.streamlit.io).
+2. Go to **App Settings** > **Secrets**.
+3. Add:
+```toml
+GEMINI_API_KEY = "your-google-gemini-api-key-here"
+```
+4. Save the secrets. The app automatically picks it up from `st.secrets["GEMINI_API_KEY"]`.
+
+### Method C: Sidebar Key Override
+You can also paste your API key directly into the **🔑 Gemini API Key Settings** box in the app's sidebar during any session.
+
+---
+
+## 🧪 Testing with Mock / Demo Mode
+PatternProof includes a fully self-contained deterministic simulation mode that requires no API key and no physical camera:
+
+1. In the sidebar, click **"✨ Load Demo Order"**.
+2. A fictional delivery receipt for "Fresh Basket (demo)" and a synthetic drawing of a damaged almond milk carton are automatically drawn using Pillow and inserted into SQLite.
+3. Simulated AI generates a tailored 4-task photographic checklist.
+4. On any task card, click:
+   - **⚡ Use Good Test Photo**: Generates a high-contrast test photo (`good_1.jpg`) and runs verification $\rightarrow$ Evaluates as **Passed**.
+   - **⚡ Use Retake Test Photo**: Generates a blurred test photo (`bad_1.jpg`) $\rightarrow$ Evaluates as **Retake Suggested** and produces plain retake advice ("Hold the camera steady...").
+5. Uploading the same photo twice flags a duplicate warning via SHA-256 and visual hash distance.
+6. After 3 attempts on any task, the option to **"Mark as user-confirmed (not machine-verified)"** appears.
+7. Click **"Proceed to Evidence Pack Export"** $\rightarrow$ **"Generate Evidence PDF"** to produce and download the structured PDF evidence pack.
 
 ---
 
 ## 📂 Project Architecture
 ```
 ProofLoop/
-├── app.py               # Streamlit user interface (5 tabs)
+├── app.py               # Streamlit user interface (3 steps: Order, Checklist, Export)
 ├── streamlit_app.py     # Streamlit Cloud deployment entrypoint
-├── db.py                # SQLite database management (table incidents)
-├── patterns.py          # Deterministic pattern computations with ID traceability
-├── ai.py                # Gemini screenshot transcription & suggestion engine
-├── ai_assistant.py      # AI Assistant task handler & verified template generator
-├── verifier.py          # Plain-Python 6-point verification engine
-├── report.py            # Structured PDF report generator using fpdf2
-├── demo_data.py         # 12 fictional demo orders & synthetic receipts
-├── uploads/             # Local evidence screenshot directory
+├── db.py                # SQLite database management (orders & tasks tables)
+├── ai.py                # Gemini vision helper with Pillow shrinker, backoff retries & mock mode
+├── tasks.py             # Claim types, templates, and Python task checklist validation
+├── verifier.py          # Plain Python 6-point image verification & advice generator
+├── demo.py              # Synthetic receipt & product photo generator (Pillow)
+├── report.py            # Evidence Pack PDF generation using fpdf2
+├── uploads/             # Local storage for receipts, product photos, and task shots
 ├── .streamlit/
-│   └── config.toml      # Modern dark theme with #FF5C1F accent
-├── requirements.txt     # Python package requirements
-├── .env.example         # Example environment configuration
+│   └── config.toml      # Dark theme (#0E1117, #1A1F2C) with orange accent (#FF5C1F)
+├── requirements.txt     # Python package dependencies
+├── .env.example         # Example environment template
 ├── .gitignore           # Excludes .env, uploads/, *.db, venv/
-└── README.md            # Documentation and instructions
+└── README.md            # Comprehensive documentation
 ```
 
 ---
 
 ## ⚠️ Known Limitations
-1. **User-Provided Authenticity**: PatternProof organizes files provided by the user and computes cryptographic hashes (SHA-256) of local files. It does not verify whether screenshots have been altered prior to upload.
-2. **Missing Receipt Timestamps**: Screenshots lacking explicit year/date timestamps rely on manual user entry for accurate chronological calculations.
-3. **Unicode / Currency Glyphs in PDF**: To prevent PDF rendering crashes across varied operating systems, non-Latin scripts and special symbols (such as currency glyphs) are normalized to standard ASCII/Latin-1 characters in PDF outputs.
+1. **User-Provided Authenticity**: PatternProof organizes user-submitted files and computes cryptographic SHA-256 hashes of original files. It does not verify whether screenshots or photos were altered prior to upload.
+2. **Camera Sensor & EXIF Metadata**: Photos taken directly through web browsers via `st.camera_input` or messaging apps often strip EXIF metadata; in such cases, the app records the server clock timestamp and tags the source as "taken in app".
+3. **Unicode / Currency Glyphs in PDF**: To prevent PDF rendering crashes across platforms, rupee currency symbols are converted to `INR` and characters are sanitized for Latin-1 encoding in `report.py`.
